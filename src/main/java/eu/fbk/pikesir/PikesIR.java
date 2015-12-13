@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -26,6 +27,7 @@ import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.HashMultimap;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
@@ -43,7 +45,12 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.queryparser.classic.ParseException;
+import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Version;
 import org.openrdf.model.Statement;
@@ -53,6 +60,7 @@ import org.slf4j.LoggerFactory;
 
 import ixa.kaflib.KAFDocument;
 
+import eu.fbk.pikesir.RankingScore.Measure;
 import eu.fbk.pikesir.util.CommandLine;
 import eu.fbk.rdfpro.AbstractRDFHandlerWrapper;
 import eu.fbk.rdfpro.RDFHandlers;
@@ -96,7 +104,7 @@ public class PikesIR {
 
     private final List<String> layers;
 
-    private final Multimap<String, String> layerFields;
+    private final Multimap<String, Field> layerFields;
 
     private final Enricher enricher;
 
@@ -185,7 +193,6 @@ public class PikesIR {
         final String pr = prefix.endsWith(".") ? prefix : prefix + ".";
 
         // Retrieve document paths
-
         this.pathDocsNAF = root.resolve(properties.getProperty(pr + "docs.naf", "docs/naf"));
         this.pathDocsRDF = root.resolve(properties.getProperty(pr + "docs.rdf", "docs/rdf"));
         this.pathDocsRDFE = root.resolve(properties.getProperty(pr + "docs.rdfe", "docs/rdfe"));
@@ -218,8 +225,10 @@ public class PikesIR {
             final int index = layerSpec.indexOf(':');
             final String layer = layerSpec.substring(0, index).trim();
             this.layers.add(layer);
-            for (final String field : layerSpec.substring(index + 1).split("[//s,]+")) {
-                this.layerFields.put(layer, field.trim());
+            for (final String fieldSpec : Splitter.on(Pattern.compile("[\\s,]+"))
+                    .omitEmptyStrings().trimResults().split(layerSpec.substring(index + 1))) {
+                final Field field = Field.forID(fieldSpec.trim());
+                this.layerFields.put(layer, field);
             }
         }
 
@@ -380,10 +389,16 @@ public class PikesIR {
         }
 
         // Materialize all possible layer combinations and associated evaluators
-        final Map<Set<String>, RankingScore.Evaluator> evaluators = Maps.newHashMap();
+        final Map<List<String>, RankingScore.Evaluator> evaluators = Maps.newHashMap();
         for (final Set<String> combination : Sets.powerSet(ImmutableSet.copyOf(this.layers))) {
             if (!combination.isEmpty()) {
-                evaluators.put(combination, RankingScore.evaluator(10));
+                final List<String> sortedLayers = Lists.newArrayList();
+                for (final String layer : this.layers) {
+                    if (combination.contains(layer)) {
+                        sortedLayers.add(layer);
+                    }
+                }
+                evaluators.put(sortedLayers, RankingScore.evaluator(10));
             }
         }
 
@@ -394,6 +409,7 @@ public class PikesIR {
         try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex.toFile()))) {
             final IndexSearcher searcher = new IndexSearcher(reader);
             final List<Runnable> queryJobs = Lists.newArrayList();
+            final Map<Integer, String> docIDs = Maps.newConcurrentMap();
             for (final String queryID : Ordering.natural().sortedCopy(queries.keySet())) {
                 final TermVector queryVector = queries.get(queryID);
                 final Map<String, Double> queryRels = rels.get(queryID);
@@ -401,7 +417,7 @@ public class PikesIR {
 
                     @Override
                     public void run() {
-                        searchHelper(searcher, queryID, queryVector, queryRels, evaluators);
+                        searchHelper(searcher, queryID, queryVector, queryRels, evaluators, docIDs);
                     }
 
                 });
@@ -410,13 +426,33 @@ public class PikesIR {
         }
 
         // Write aggregate results
+        final Map<RankingScore, List<String>> scores = Maps.newIdentityHashMap();
         try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
-                .resolve("aggregates.tsv").toAbsolutePath().toString())))) {
-            for (final Map.Entry<Set<String>, RankingScore.Evaluator> entry : evaluators
+                .resolve("aggregates.csv").toAbsolutePath().toString())))) {
+            for (final Map.Entry<List<String>, RankingScore.Evaluator> entry : evaluators
                     .entrySet()) {
-                writer.append(Joiner.on(",").join(entry.getKey())).append("\t")
-                .append(formatRankingScore(entry.getValue().get(), "\t")).append("\n");
+                final List<String> layers = entry.getKey();
+                final RankingScore score = entry.getValue().get();
+                scores.put(score, layers);
+                writer.append(Joiner.on(",").join(layers)).append(";")
+                .append(formatRankingScore(score, ";")).append("\n");
             }
+        }
+
+        // Report top scores
+        if (LOGGER.isInfoEnabled()) {
+            final List<RankingScore> sortedScores = RankingScore.comparator(Measure.MAP, null,
+                    true).sortedCopy(scores.keySet());
+            final StringBuilder builder = new StringBuilder("Top scores:");
+            for (int i = 0; i < 10; ++i) {
+                final RankingScore score = sortedScores.get(i);
+                builder.append(String.format("\n%-30s - p@1=%.3f p@3=%.3f p@5=%.3f p@10=%.3f "
+                        + "mrr=%.3f ndcg=%.3f ndcg@10=%.3f map=%.3f map@10=%.3f",
+                        scores.get(score), score.getPrecision(1), score.getPrecision(3),
+                        score.getPrecision(5), score.getPrecision(10), score.getMRR(),
+                        score.getNDCG(), score.getNDCG(10), score.getMAP(), score.getMAP(10)));
+            }
+            LOGGER.info(builder.toString());
         }
 
         LOGGER.info("Done in {} ms", System.currentTimeMillis() - ts);
@@ -424,24 +460,101 @@ public class PikesIR {
 
     private void searchHelper(final IndexSearcher searcher, final String queryID,
             final TermVector queryVector, final Map<String, Double> rels,
-            final Map<Set<String>, RankingScore.Evaluator> evaluators) {
+            final Map<List<String>, RankingScore.Evaluator> evaluators,
+            final Map<Integer, String> docIDs) {
 
         LOGGER.info("Evaluating query {}", queryID);
 
-        // TODO
+        // Perform the query on each layer, storing all the hits obtained
+        final Map<String, Hit> hits = Maps.newHashMap();
+        final Set<String> availableLayers = Sets.newHashSet();
+        for (final String layer : this.layers) {
+
+            // Compose query
+            final StringBuilder builder = new StringBuilder();
+            String separator = "";
+            for (final Field field : this.layerFields.get(layer)) {
+                for (final Term term : queryVector.getTerms(field)) {
+                    builder.append(separator);
+                    builder.append(field.getID()).append(":\"").append(term.getValue())
+                    .append("\"");
+                    separator = " OR ";
+                }
+            }
+            final String queryString = builder.toString();
+
+            // If query is non-empty, mark the layer as available and perform the query
+            if (!queryString.isEmpty()) {
+                availableLayers.add(layer);
+                final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
+                try {
+                    final Query query = parser.parse(queryString);
+                    final TopDocs results = searcher.search(query, 1000);
+                    for (final ScoreDoc scoreDoc : results.scoreDocs) {
+                        String docID = docIDs.get(scoreDoc.doc);
+                        if (docID == null) {
+                            docID = searcher.doc(scoreDoc.doc, ImmutableSet.of("id")).get("id");
+                            docIDs.put(scoreDoc.doc, docID);
+                        }
+                        Hit hit = hits.get(docID);
+                        if (hit == null) {
+                            hit = new Hit(docID);
+                            hits.put(docID, hit);
+                        }
+                        hit.setLayerScore(layer, scoreDoc.score);
+                    }
+                } catch (ParseException | IOException ex) {
+                    Throwables.propagate(ex);
+                }
+            }
+        }
+
+        for (final Map.Entry<List<String>, RankingScore.Evaluator> entry : evaluators.entrySet()) {
+
+            final List<String> allLayers = entry.getKey();
+            final List<String> queryLayers = Lists.newArrayList();
+            for (final String layer : allLayers) {
+                if (availableLayers.contains(layer)) {
+                    queryLayers.add(layer);
+                }
+            }
+
+            final RankingScore.Evaluator evaluator = entry.getValue();
+            if (!queryLayers.isEmpty()) {
+                final List<Hit> sortedHits = Lists.newArrayListWithCapacity(hits.size());
+                for (final Hit hit : hits.values()) {
+                    for (final String layer : queryLayers) {
+                        if (hit.getLayerScore(layer) != 0.0) {
+                            sortedHits.add(hit);
+                            break;
+                        }
+                    }
+                }
+                this.aggregator.aggregate(allLayers, queryLayers, sortedHits);
+                Collections.sort(sortedHits, Hit.comparator(null, true));
+                final List<String> ids = Lists.newArrayListWithCapacity(sortedHits.size());
+                for (final Hit hit : sortedHits) {
+                    ids.add(hit.getDocumentID());
+                }
+                evaluator.add(ids, rels);
+            } else {
+                // A rescale factor was previously used here
+                evaluator.add(ImmutableList.of(), rels);
+            }
+        }
     }
 
     private static String formatRankingScore(final RankingScore score, final String separator) {
         final StringBuilder builder = new StringBuilder();
-        builder.append(score.getPrecision(1)).append('\t');
-        builder.append(score.getPrecision(3)).append('\t');
-        builder.append(score.getPrecision(5)).append('\t');
-        builder.append(score.getPrecision(10)).append('\t');
-        builder.append(score.getMRR()).append('\t');
-        builder.append(score.getNDCG()).append('\t');
-        builder.append(score.getNDCG(10)).append('\t');
-        builder.append(score.getMAP()).append('\t');
-        builder.append(score.getMAP(10)).append('\t');
+        builder.append(score.getPrecision(1)).append(separator);
+        builder.append(score.getPrecision(3)).append(separator);
+        builder.append(score.getPrecision(5)).append(separator);
+        builder.append(score.getPrecision(10)).append(separator);
+        builder.append(score.getMRR()).append(separator);
+        builder.append(score.getNDCG()).append(separator);
+        builder.append(score.getNDCG(10)).append(separator);
+        builder.append(score.getMAP()).append(separator);
+        builder.append(score.getMAP(10));
         return builder.toString();
     }
 

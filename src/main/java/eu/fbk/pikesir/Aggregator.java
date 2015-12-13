@@ -82,6 +82,7 @@ public abstract class Aggregator {
             for (final Hit hit : hits) {
                 for (int i = 0; i < numLayers; ++i) {
                     final double maxScore = maxScores[i];
+                    //scores[i] = hit.getLayerScore(layers[i]);
                     scores[i] = maxScores[i] == 0.0 ? 0.0 : hit.getLayerScore(layers[i])
                             / maxScore;
                 }

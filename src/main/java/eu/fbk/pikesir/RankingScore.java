@@ -510,7 +510,7 @@ public class RankingScore implements Serializable {
         public RankingScore get() {
             synchronized (this) {
                 if (this.result == null) {
-                    final double factor = this.numRankings == 0 ? 0.0 : 1 / this.numRankings;
+                    final double factor = this.numRankings == 0 ? 0.0 : 1.0 / this.numRankings;
                     final double mrr = this.sumMRR * factor;
                     final double ndcg = this.sumNDCG * factor;
                     final double altNdcg = this.sumAltNDCG * factor;
