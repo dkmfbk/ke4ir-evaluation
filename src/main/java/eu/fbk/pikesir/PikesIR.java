@@ -83,6 +83,8 @@ public class PikesIR {
 
     private final Analyzer analyzer;
 
+    private final Aggregator aggregator;
+
     public static void main(final String... args) {
 
         try {
@@ -186,6 +188,9 @@ public class PikesIR {
 
         // Build the analyzer
         this.analyzer = Analyzer.create(root, properties, "pikesir.analyzer.");
+
+        // Build the aggregator
+        this.aggregator = Aggregator.create(root, properties, "pikesir.aggregator.");
     }
 
     public void enrichDocs() throws IOException {

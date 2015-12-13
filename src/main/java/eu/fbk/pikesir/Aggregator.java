@@ -11,31 +11,31 @@ public abstract class Aggregator {
     public abstract void aggregate(final List<String> allLayers, final List<String> queryLayers,
             final List<Hit> hits);
 
-    public Aggregator createSumAggregator() {
+    public static Aggregator createSumAggregator() {
         return SumAggregator.INSTANCE;
     }
 
-    public Aggregator createProductAggregator() {
+    public static Aggregator createProductAggregator() {
         return ProductAggregator.INSTANCE;
     }
 
-    public Aggregator createPrioritizedAggregator() {
+    public static Aggregator createPrioritizedAggregator() {
         return PrioritizedAggregator.INSTANCE;
     }
 
-    public Aggregator createMeanAggregator() {
+    public static Aggregator createMeanAggregator() {
         return MeanAggregator.INSTANCE;
     }
 
-    public Aggregator createMaxAggregator() {
+    public static Aggregator createMaxAggregator() {
         return MaxAggregator.INSTANCE;
     }
 
-    public Aggregator createMinAggregator() {
+    public static Aggregator createMinAggregator() {
         return MinAggregator.INSTANCE;
     }
 
-    public Aggregator create(final Path root, final Properties properties, String prefix) {
+    public static Aggregator create(final Path root, final Properties properties, String prefix) {
 
         // Normalize prefix, ensuring it ends with '.'
         prefix = prefix.endsWith(".") ? prefix : prefix + ".";
