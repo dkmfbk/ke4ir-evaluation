@@ -510,20 +510,20 @@ public class RankingScore implements Serializable {
         public RankingScore get() {
             synchronized (this) {
                 if (this.result == null) {
-                    Preconditions.checkState(this.numRankings > 0, "No ranking evaluated!");
-                    final double mrr = this.sumMRR / this.numRankings;
-                    final double ndcg = this.sumNDCG / this.numRankings;
-                    final double altNdcg = this.sumAltNDCG / this.numRankings;
-                    final double map = this.sumMAP / this.numRankings;
+                    final double factor = this.numRankings == 0 ? 0.0 : 1 / this.numRankings;
+                    final double mrr = this.sumMRR * factor;
+                    final double ndcg = this.sumNDCG * factor;
+                    final double altNdcg = this.sumAltNDCG * factor;
+                    final double map = this.sumMAP * factor;
                     final double[] precisions = new double[this.maxN];
                     final double[] ndcgs = new double[this.maxN];
                     final double[] altNdcgs = new double[this.maxN];
                     final double[] maps = new double[this.maxN];
                     for (int i = 0; i < this.maxN; ++i) {
-                        precisions[i] = this.sumPrecisions[i] / this.numRankings;
-                        ndcgs[i] = this.sumNDCGs[i] / this.numRankings;
-                        altNdcgs[i] = this.sumAltNDCGs[i] / this.numRankings;
-                        maps[i] = this.sumMAPs[i] / this.numRankings;
+                        precisions[i] = this.sumPrecisions[i] * factor;
+                        ndcgs[i] = this.sumNDCGs[i] * factor;
+                        altNdcgs[i] = this.sumAltNDCGs[i] * factor;
+                        maps[i] = this.sumMAPs[i] * factor;
                     }
                     this.result = new RankingScore(this.maxN, this.numRankings, precisions, mrr,
                             ndcg, ndcgs, altNdcg, altNdcgs, map, maps);

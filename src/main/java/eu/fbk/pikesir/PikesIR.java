@@ -12,25 +12,38 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.google.common.base.Joiner;
+import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
+import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Multimap;
+import com.google.common.collect.Ordering;
+import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
 
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field.Store;
 import org.apache.lucene.document.TextField;
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Version;
 import org.openrdf.model.Statement;
@@ -79,6 +92,12 @@ public class PikesIR {
 
     private final Path pathIndex;
 
+    private final Path pathResults;
+
+    private final List<String> layers;
+
+    private final Multimap<String, String> layerFields;
+
     private final Enricher enricher;
 
     private final Analyzer analyzer;
@@ -94,19 +113,20 @@ public class PikesIR {
                     .withName("pikesir")
                     .withOption("p", "properties", "specifies the configuration properties file",
                             "PATH", CommandLine.Type.FILE_EXISTING, true, false, false)
-                    .withOption("e", "enrich", "enriches the RDF of both documents and queries")
-                    .withOption(null, "enrich-docs", "enriches the RDF of documents only")
-                    .withOption(null, "enrich-queries", "enriches the RDF of queries only")
-                    .withOption("a", "analyze",
-                            "analyzes both documents and queries (NAF + RDF enriched)")
-                    .withOption(null, "analyze-docs",
-                            "analyzes documents only (NAF + RDF enriched)")
-                    .withOption(null, "analyze-queries",
-                            "analyzes queries only (NAF + RDF enriched)")
-                    .withOption("i", "index", "indexes document terms in Lucene")
-                    .withHeader("supports all the operations involved in the evaluation of " //
-                            + "semantic information retrieval: enrichment, analysis, " //
-                            + "indexing, search").parse(args);
+                            .withOption("e", "enrich", "enriches the RDF of both documents and queries")
+                            .withOption(null, "enrich-docs", "enriches the RDF of documents only")
+                            .withOption(null, "enrich-queries", "enriches the RDF of queries only")
+                            .withOption("a", "analyze",
+                                    "analyzes both documents and queries (NAF + RDF enriched)")
+                                    .withOption(null, "analyze-docs",
+                                            "analyzes documents only (NAF + RDF enriched)")
+                                            .withOption(null, "analyze-queries",
+                                                    "analyzes queries only (NAF + RDF enriched)")
+                                                    .withOption("i", "index", "indexes document terms in Lucene")
+                                                    .withOption("s", "search", "evaluates queries over Lucene index")
+                                                    .withHeader("supports all the operations involved in the evaluation of " //
+                                                            + "semantic information retrieval: enrichment, analysis, " //
+                                                            + "indexing, search").parse(args);
 
             // Extract options
             final Path propertiesPath = Paths.get(cmd.getOptionValue("p", String.class,
@@ -116,6 +136,7 @@ public class PikesIR {
             final boolean analyzeDocs = cmd.hasOption("analyze-docs") || cmd.hasOption("a");
             final boolean analyzeQueries = cmd.hasOption("analyze-queries") || cmd.hasOption("a");
             final boolean index = cmd.hasOption("i");
+            final boolean search = cmd.hasOption("s");
 
             // Abort if properties file does not exist
             if (!Files.exists(propertiesPath)) {
@@ -148,6 +169,9 @@ public class PikesIR {
             if (index) {
                 pikesIR.index();
             }
+            if (search) {
+                pikesIR.search();
+            }
 
         } catch (final Throwable ex) {
             // Display error information and terminate
@@ -178,10 +202,26 @@ public class PikesIR {
         this.pathQueriesTerms = root.resolve(properties.getProperty( //
                 pr + "queries.terms", "queries/terms.tsv.gz"));
         this.pathQueriesRelevances = root.resolve(properties.getProperty( //
-                pr + "relevances.terms", "queries/relevances.tsv.gz"));
+                pr + "queries.relevances", "queries/relevances.tsv.gz"));
 
         // Retrieve index path
         this.pathIndex = root.resolve(properties.getProperty(pr + "index", "index"));
+
+        // Retrieve results path
+        this.pathResults = root.resolve(properties.getProperty(pr + "results", "results"));
+
+        // Retrieve layers and associated fields
+        this.layers = Lists.newArrayList();
+        this.layerFields = HashMultimap.create();
+        for (final String layerSpec : Splitter.on(';').trimResults().omitEmptyStrings()
+                .split(properties.getProperty(pr + "layers"))) {
+            final int index = layerSpec.indexOf(':');
+            final String layer = layerSpec.substring(0, index).trim();
+            this.layers.add(layer);
+            for (final String field : layerSpec.substring(index + 1).split("[//s,]+")) {
+                this.layerFields.put(layer, field.trim());
+            }
+        }
 
         // Build the enricher
         this.enricher = Enricher.create(root, properties, "pikesir.enricher.");
@@ -294,7 +334,7 @@ public class PikesIR {
         // Create index directory if necessary and wipe out existing directory contents
         initDir(this.pathIndex);
 
-        // TODO: improve following code
+        // TODO: avoid loading everything into RAM; parallelize
         Map<String, TermVector> vectors = Maps.newHashMap();
         try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(this.pathDocsTerms.toAbsolutePath()
                 .toString())))) {
@@ -322,6 +362,108 @@ public class PikesIR {
 
         LOGGER.info("Done in {} ms ({} documents, {} terms added)", System.currentTimeMillis()
                 - ts, vectors.size(), numTerms);
+    }
+
+    public void search() throws IOException {
+
+        final long ts = System.currentTimeMillis();
+        LOGGER.info("Searching Lucene index");
+
+        // Read relevances
+        final Map<String, Map<String, Double>> rels = readRelevances(this.pathQueriesRelevances);
+
+        // Read queries
+        Map<String, TermVector> queries = Maps.newHashMap();
+        try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(this.pathQueriesTerms
+                .toAbsolutePath().toString())))) {
+            queries = TermVector.read(reader);
+        }
+
+        // Materialize all possible layer combinations and associated evaluators
+        final Map<Set<String>, RankingScore.Evaluator> evaluators = Maps.newHashMap();
+        for (final Set<String> combination : Sets.powerSet(ImmutableSet.copyOf(this.layers))) {
+            if (!combination.isEmpty()) {
+                evaluators.put(combination, RankingScore.evaluator(10));
+            }
+        }
+
+        // Create results directory if necessary and wipe out existing content
+        initDir(this.pathResults);
+
+        // Open the index for read and evaluate all the queries in parallel
+        try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex.toFile()))) {
+            final IndexSearcher searcher = new IndexSearcher(reader);
+            final List<Runnable> queryJobs = Lists.newArrayList();
+            for (final String queryID : Ordering.natural().sortedCopy(queries.keySet())) {
+                final TermVector queryVector = queries.get(queryID);
+                final Map<String, Double> queryRels = rels.get(queryID);
+                queryJobs.add(new Runnable() {
+
+                    @Override
+                    public void run() {
+                        searchHelper(searcher, queryID, queryVector, queryRels, evaluators);
+                    }
+
+                });
+            }
+            Environment.run(queryJobs);
+        }
+
+        // Write aggregate results
+        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
+                .resolve("aggregates.tsv").toAbsolutePath().toString())))) {
+            for (final Map.Entry<Set<String>, RankingScore.Evaluator> entry : evaluators
+                    .entrySet()) {
+                writer.append(Joiner.on(",").join(entry.getKey())).append("\t")
+                .append(formatRankingScore(entry.getValue().get(), "\t")).append("\n");
+            }
+        }
+
+        LOGGER.info("Done in {} ms", System.currentTimeMillis() - ts);
+    }
+
+    private void searchHelper(final IndexSearcher searcher, final String queryID,
+            final TermVector queryVector, final Map<String, Double> rels,
+            final Map<Set<String>, RankingScore.Evaluator> evaluators) {
+
+        LOGGER.info("Evaluating query {}", queryID);
+
+        // TODO
+    }
+
+    private static String formatRankingScore(final RankingScore score, final String separator) {
+        final StringBuilder builder = new StringBuilder();
+        builder.append(score.getPrecision(1)).append('\t');
+        builder.append(score.getPrecision(3)).append('\t');
+        builder.append(score.getPrecision(5)).append('\t');
+        builder.append(score.getPrecision(10)).append('\t');
+        builder.append(score.getMRR()).append('\t');
+        builder.append(score.getNDCG()).append('\t');
+        builder.append(score.getNDCG(10)).append('\t');
+        builder.append(score.getMAP()).append('\t');
+        builder.append(score.getMAP(10)).append('\t');
+        return builder.toString();
+    }
+
+    private static Map<String, Map<String, Double>> readRelevances(final Path path)
+            throws IOException {
+
+        final Map<String, Map<String, Double>> rels = Maps.newHashMap();
+        for (final String line : Files.readAllLines(path)) {
+            final String[] tokens = line.split("[\\s+,;]+");
+            final Map<String, Double> map = Maps.newHashMap();
+            rels.put(tokens[0], map);
+            for (int i = 1; i < tokens.length; ++i) {
+                final int j = tokens[i].lastIndexOf(':');
+                if (j < 0) {
+                    map.put(tokens[i], 1.0);
+                } else {
+                    map.put(tokens[i].substring(0, j),
+                            Double.parseDouble(tokens[i].substring(j + 1)));
+                }
+            }
+        }
+        return rels;
     }
 
     private static QuadModel readTriples(final Path path) throws IOException {
