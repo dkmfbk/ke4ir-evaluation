@@ -9,6 +9,7 @@ import java.util.Set;
 
 import javax.annotation.Nullable;
 
+import com.google.common.base.Joiner;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -34,6 +35,11 @@ public abstract class Enricher {
     private static final Logger LOGGER = LoggerFactory.getLogger(Enricher.class);
 
     public abstract void enrich(QuadModel model);
+
+    @Override
+    public String toString() {
+        return getClass().getSimpleName();
+    }
 
     public static Enricher concat(final Enricher... enrichers) {
         if (enrichers.length == 0) {
@@ -102,6 +108,11 @@ public abstract class Enricher {
             for (final Enricher enricher : this.enrichers) {
                 enricher.enrich(model);
             }
+        }
+
+        @Override
+        public String toString() {
+            return getClass().getSimpleName() + "(" + Joiner.on(", ").join(this.enrichers) + ")";
         }
 
     }
@@ -178,6 +189,13 @@ public abstract class Enricher {
             } catch (final RDFHandlerException ex) {
                 Throwables.propagate(ex);
             }
+        }
+
+        @Override
+        public String toString() {
+            return getClass().getSimpleName() + "(path: " + this.indexPath + ", recursion:"
+                    + this.recursiveNamespaces + ". norecursion:" + this.nonRecursiveNamespaces
+                    + ")";
         }
 
         private void collect(final Set<URI> set, final Value value) {

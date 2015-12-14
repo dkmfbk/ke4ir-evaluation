@@ -10,6 +10,7 @@ import java.util.Set;
 import javax.annotation.Nullable;
 
 import com.google.common.base.Joiner;
+import com.google.common.base.Throwables;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -29,7 +30,6 @@ import org.openrdf.model.vocabulary.RDF;
 import org.openrdf.model.vocabulary.RDFS;
 import org.openrdf.model.vocabulary.SKOS;
 import org.tartarus.snowball.SnowballProgram;
-import org.tartarus.snowball.ext.EnglishStemmer;
 
 import ixa.kaflib.KAFDocument;
 
@@ -40,6 +40,11 @@ public abstract class Analyzer {
 
     public abstract void analyze(KAFDocument document, QuadModel model,
             TermVector.Builder builder, boolean isQuery);
+
+    @Override
+    public String toString() {
+        return getClass().getSimpleName();
+    }
 
     public static Analyzer concat(final Analyzer... analyzers) {
         if (analyzers.length == 0) {
@@ -55,8 +60,9 @@ public abstract class Analyzer {
         return NullAnalyzer.INSTANCE;
     }
 
-    public static Analyzer createStemAnalyzer(@Nullable final Iterable<String> stopWords) {
-        return new StemAnalyzer(stopWords);
+    public static Analyzer createStemAnalyzer(final String stemmerClass,
+            @Nullable final Iterable<String> stopWords) {
+        return new StemAnalyzer(stemmerClass, stopWords);
     }
 
     public static Analyzer createURIAnalyzer() {
@@ -89,10 +95,11 @@ public abstract class Analyzer {
 
         // Add an analyzer extracting stems, if enabled
         if (Boolean.parseBoolean(properties.getProperty(prefix + "stem", "false"))) {
+            final String stemmerClass = properties.getProperty(prefix + "stemmer");
             final String stopwordsProp = properties.getProperty(prefix + "stopwords");
             final Set<String> stopwords = stopwordsProp == null ? null : ImmutableSet
                     .copyOf(stopwordsProp.split("\\s+"));
-            analyzers.add(createStemAnalyzer(stopwords));
+            analyzers.add(createStemAnalyzer(stemmerClass, stopwords));
         }
 
         // Add a URI analyzer, if enabled
@@ -158,6 +165,11 @@ public abstract class Analyzer {
             }
         }
 
+        @Override
+        public String toString() {
+            return getClass().getSimpleName() + "(" + Joiner.on(", ").join(this.analyzers) + ")";
+        }
+
     }
 
     private static final class NullAnalyzer extends Analyzer {
@@ -174,6 +186,8 @@ public abstract class Analyzer {
     private static final class StemAnalyzer extends Analyzer {
 
         // Based on WordDelimiterFilter
+
+        private static final String DEFAULT_STEMMER_TYPE = "EnglishStemmer";
 
         private static final Set<String> DEFAULT_STOP_WORDS = ImmutableSet.of("a", "an", "and",
                 "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it", "no",
@@ -211,11 +225,21 @@ public abstract class Analyzer {
             WORD_DELIM_TABLE = tab;
         }
 
+        private final Class<? extends SnowballProgram> stemmerClass;
+
         private final Set<String> stopWords;
 
-        StemAnalyzer(@Nullable final Iterable<String> stopWords) {
-            this.stopWords = stopWords != null ? ImmutableSet.copyOf(stopWords)
-                    : DEFAULT_STOP_WORDS;
+        @SuppressWarnings({ "unchecked", "rawtypes" })
+        StemAnalyzer(@Nullable final String stemmerClass,
+                @Nullable final Iterable<String> stopWords) {
+            try {
+                this.stemmerClass = (Class) Class.forName("org.tartarus.snowball.ext."
+                        + (stemmerClass != null ? stemmerClass : DEFAULT_STEMMER_TYPE));
+                this.stopWords = stopWords != null ? ImmutableSet.copyOf(stopWords)
+                        : DEFAULT_STOP_WORDS;
+            } catch (final ClassNotFoundException ex) {
+                throw new IllegalArgumentException("Invalid stemmer " + stemmerClass);
+            }
         }
 
         @Override
@@ -227,11 +251,15 @@ public abstract class Analyzer {
                 final String wf = term.getStr().trim();
                 for (final String subWord : extract(wf)) {
                     if (isValidTerm(subWord)) {
-                        final SnowballProgram stemmer = new EnglishStemmer(); // TODO
-                        stemmer.setCurrent(subWord.toLowerCase());
-                        stemmer.stem();
-                        final String subWordStem = stemmer.getCurrent();
-                        builder.addTerm(Field.STEM, subWordStem);
+                        try {
+                            final SnowballProgram stemmer = this.stemmerClass.newInstance();
+                            stemmer.setCurrent(subWord.toLowerCase());
+                            stemmer.stem();
+                            final String subWordStem = stemmer.getCurrent();
+                            builder.addTerm(Field.STEM, subWordStem);
+                        } catch (final InstantiationException | IllegalAccessException ex) {
+                            Throwables.propagate(ex);
+                        }
                     }
                 }
             }

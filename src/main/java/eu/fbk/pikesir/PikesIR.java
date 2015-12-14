@@ -22,6 +22,8 @@ import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.annotation.Nullable;
+
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
@@ -62,7 +64,6 @@ import org.slf4j.LoggerFactory;
 
 import ixa.kaflib.KAFDocument;
 
-import eu.fbk.pikesir.RankingScore.Measure;
 import eu.fbk.pikesir.util.CommandLine;
 import eu.fbk.pikesir.util.Util;
 import eu.fbk.rdfpro.AbstractRDFHandlerWrapper;
@@ -72,7 +73,6 @@ import eu.fbk.rdfpro.util.Environment;
 import eu.fbk.rdfpro.util.IO;
 import eu.fbk.rdfpro.util.QuadModel;
 import eu.fbk.rdfpro.util.Statements;
-import eu.fbk.rdfpro.util.Tracker;
 
 public class PikesIR {
 
@@ -114,6 +114,13 @@ public class PikesIR {
     private final Map<String, Integer> layerRepetitions;
 
     private final Map<String, Double> layerBoosts;
+
+    private final Set<Set<String>> layerFocus;
+
+    private final RankingScore.Measure sortMeasure;
+
+    @Nullable
+    private final Integer sortMeasureAtNumber;
 
     private final Enricher enricher;
 
@@ -266,6 +273,23 @@ public class PikesIR {
         this.layerRepetitions = Util.parseMap(properties.getProperty(pr + "layers.repetitions"),
                 Integer.class);
 
+        // Retrieve the layer combinations we focus on
+        this.layerFocus = Sets.newHashSet();
+        for (final String spec : Splitter.on(';').trimResults().omitEmptyStrings()
+                .split(properties.getProperty(pr + "results.focus", ""))) {
+            this.layerFocus.add(ImmutableSet.copyOf(Splitter.on(',').trimResults()
+                    .omitEmptyStrings().split(spec)));
+        }
+
+        // Retrieve sort preferences
+        final String sortSpec = properties.getProperty(pr + "results.sort", "map").trim()
+                .toUpperCase();
+        final int index = sortSpec.indexOf('@');
+        this.sortMeasure = RankingScore.Measure.valueOf(index < 0 ? sortSpec : sortSpec.substring(
+                0, index));
+        this.sortMeasureAtNumber = index < 0 ? null : Integer.parseInt(sortSpec
+                .substring(index + 1));
+
         // Build the enricher
         this.enricher = Enricher.create(root, properties, "pikesir.enricher.");
 
@@ -274,7 +298,12 @@ public class PikesIR {
 
         // Build the aggregator
         this.aggregator = Aggregator.create(root, properties, "pikesir.aggregator.");
-        LOGGER.info("Using {}", this.aggregator);
+
+        // Report configuration
+        LOGGER.info("Focus on layer combinations: " + Joiner.on(' ').join(this.layerFocus));
+        LOGGER.info("Using enricher: {}", this.enricher);
+        LOGGER.info("Using analyzer: {}", this.analyzer);
+        LOGGER.info("Using aggregator: {}", this.aggregator);
     }
 
     public void enrichDocs() throws IOException {
@@ -303,10 +332,13 @@ public class PikesIR {
                     relativePath.substring(0, nameEnd) + ".tql.gz");
             try {
                 final QuadModel model = readTriples(path);
-                inTriples.addAndGet(model.size());
+                final int sizeBefore = model.size();
                 this.enricher.enrich(model);
-                outTriples.addAndGet(model.size());
                 writeTriples(outputPath, model);
+                inTriples.addAndGet(sizeBefore);
+                outTriples.addAndGet(model.size());
+                LOGGER.info("Enriched {} - {} triples obtained from {} triples", path, sizeBefore,
+                        model.size());
             } catch (final Throwable ex) {
                 Throwables.propagate(ex);
             }
@@ -361,6 +393,8 @@ public class PikesIR {
                     synchronized (writer) {
                         TermVector.write(writer, ImmutableMap.of(id, vector));
                     }
+                    LOGGER.info("Analyzed {} - {} terms from {} tokens, {} triples", path,
+                            vector.size(), document.getTerms().size(), model.size());
                 } catch (final Throwable ex) {
                     Throwables.propagate(ex);
                 }
@@ -430,7 +464,7 @@ public class PikesIR {
         }
 
         // Materialize all possible layer combinations and associated evaluators
-        final Map<List<String>, RankingScore.Evaluator> evaluators = Maps.newHashMap();
+        final Map<List<String>, Map<String, RankingScore>> scores = Maps.newHashMap();
         for (final Set<String> combination : Sets.powerSet(ImmutableSet.copyOf(this.layers))) {
             if (!combination.isEmpty()) {
                 final List<String> sortedLayers = Lists.newArrayList();
@@ -439,7 +473,7 @@ public class PikesIR {
                         sortedLayers.add(layer);
                     }
                 }
-                evaluators.put(sortedLayers, RankingScore.evaluator(10));
+                scores.put(sortedLayers, Maps.newHashMap());
             }
         }
 
@@ -459,8 +493,7 @@ public class PikesIR {
                     @Override
                     public void run() {
                         try {
-                            searchHelper(searcher, queryID, queryVector, queryRels, evaluators,
-                                    docIDs);
+                            searchHelper(searcher, queryID, queryVector, queryRels, scores, docIDs);
                         } catch (final Throwable ex) {
                             throw Throwables.propagate(ex);
                         }
@@ -471,32 +504,56 @@ public class PikesIR {
             Environment.run(queryJobs);
         }
 
-        // Write aggregate results
-        final Map<RankingScore, List<String>> scores = Maps.newIdentityHashMap();
+        // Compute aggregated scores and sort them
+        final Map<RankingScore, List<String>> aggregateScores = Maps.newIdentityHashMap();
+        for (final Map.Entry<List<String>, Map<String, RankingScore>> entry : scores.entrySet()) {
+            aggregateScores.put(RankingScore.average(entry.getValue().values()), entry.getKey());
+        }
+        final List<RankingScore> sortedScores = RankingScore.comparator(this.sortMeasure,
+                this.sortMeasureAtNumber, true).sortedCopy(aggregateScores.keySet());
+
+        // Write aggregate scores
         try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
                 .resolve("aggregates.csv").toAbsolutePath().toString())))) {
-            for (final Map.Entry<List<String>, RankingScore.Evaluator> entry : evaluators
-                    .entrySet()) {
-                final List<String> layers = entry.getKey();
-                final RankingScore score = entry.getValue().get();
-                scores.put(score, layers);
-                writer.append(Joiner.on(",").join(layers)).append(";")
+            writer.append("layers;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10\n");
+            for (final RankingScore score : sortedScores) {
+                writer.append(Joiner.on(",").join(aggregateScores.get(score))).append(";")
                         .append(formatRankingScore(score, ";")).append("\n");
             }
         }
 
-        // Report top scores
+        // Write reports for the layer combinations we focus on
+        for (final Set<String> layers : this.layerFocus) {
+            try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
+                    .resolve("queries-" + Joiner.on('-').join(layers) + ".csv").toAbsolutePath()
+                    .toString())))) {
+                writer.append("query;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10\n");
+                for (final Map.Entry<List<String>, Map<String, RankingScore>> entry : scores
+                        .entrySet()) {
+                    if (ImmutableSet.copyOf(entry.getKey()).equals(layers)) {
+                        for (final String queryID : Ordering.natural().sortedCopy(
+                                entry.getValue().keySet())) {
+                            writer.append(queryID)
+                                    .append(';')
+                                    .append(formatRankingScore(entry.getValue().get(queryID), ";"))
+                                    .append('\n');
+                        }
+                    }
+                }
+            }
+        }
+
+        // Report top aggregate scores
         if (LOGGER.isInfoEnabled()) {
-            final List<RankingScore> sortedScores = RankingScore.comparator(Measure.MAP, null,
-                    true).sortedCopy(scores.keySet());
             final StringBuilder builder = new StringBuilder("Top scores:");
             for (int i = 0; i < 10; ++i) {
                 final RankingScore score = sortedScores.get(i);
-                builder.append(String.format("\n%-30s - p@1=%.3f p@3=%.3f p@5=%.3f p@10=%.3f "
-                        + "mrr=%.3f ndcg=%.3f ndcg@10=%.3f map=%.3f map@10=%.3f",
-                        scores.get(score), score.getPrecision(1), score.getPrecision(3),
-                        score.getPrecision(5), score.getPrecision(10), score.getMRR(),
-                        score.getNDCG(), score.getNDCG(10), score.getMAP(), score.getMAP(10)));
+                builder.append(String.format("\n  %-40s - p@1=%.3f p@3=%.3f p@5=%.3f p@10=%.3f "
+                        + "mrr=%.3f ndcg=%.3f ndcg@10=%.3f map=%.3f map@10=%.3f", Joiner.on(',')
+                        .join(aggregateScores.get(score)), score.getPrecision(1), score
+                        .getPrecision(3), score.getPrecision(5), score.getPrecision(10), score
+                        .getMRR(), score.getNDCG(), score.getNDCG(10), score.getMAP(), score
+                        .getMAP(10)));
             }
             LOGGER.info(builder.toString());
         }
@@ -506,10 +563,8 @@ public class PikesIR {
 
     private void searchHelper(final IndexSearcher searcher, final String queryID,
             final TermVector queryVector, final Map<String, Double> rels,
-            final Map<List<String>, RankingScore.Evaluator> evaluators,
+            final Map<List<String>, Map<String, RankingScore>> scores,
             final Map<Integer, String> docIDs) throws IOException, ParseException {
-
-        LOGGER.info("Evaluating query {}", queryID);
 
         // Perform the query on each layer, storing all the hits obtained
         final Map<String, Hit> hits = Maps.newHashMap();
@@ -563,8 +618,10 @@ public class PikesIR {
         }
 
         final Map<RankingScore, String> queryLines = Maps.newIdentityHashMap();
+        RankingScore bestScore = null;
+        List<String> bestLayers = null;
 
-        for (final Map.Entry<List<String>, RankingScore.Evaluator> entry : evaluators.entrySet()) {
+        for (final Map.Entry<List<String>, Map<String, RankingScore>> entry : scores.entrySet()) {
 
             final List<String> allLayers = entry.getKey();
             final List<String> queryLayers = Lists.newArrayList();
@@ -574,7 +631,7 @@ public class PikesIR {
                 }
             }
 
-            final RankingScore.Evaluator evaluator = entry.getValue();
+            final Map<String, RankingScore> queryScores = entry.getValue();
             if (!queryLayers.isEmpty()) {
                 final List<Hit> sortedHits = Lists.newArrayListWithCapacity(hits.size());
                 for (final Hit hit : hits.values()) {
@@ -593,22 +650,31 @@ public class PikesIR {
                 }
 
                 final RankingScore score = RankingScore.evaluator(10).add(ids, rels).get();
-                evaluator.add(score);
+                queryScores.put(queryID, score);
 
                 queryLines.put(score,
                         Joiner.on(',').join(queryLayers) + ';' + formatRankingScore(score, ";")
                                 + ';' + Joiner.on(",").join(Iterables.limit(sortedHits, 10)));
+
+                if (bestScore == null
+                        || RankingScore.comparator(this.sortMeasure, this.sortMeasureAtNumber,
+                                true).compare(score, bestScore) < 0) {
+                    bestScore = score;
+                    bestLayers = allLayers;
+                }
+
             } else {
                 // A rescale factor was previously used here
-                evaluator.add(ImmutableList.of(), rels);
+                queryScores.put(queryID, RankingScore.evaluator(10).add(ImmutableList.of(), rels)
+                        .get());
             }
         }
 
         try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
                 .resolve(queryID + ".csv").toAbsolutePath().toString())))) {
             writer.append("layers;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10;ranking (top 10)\n");
-            for (final RankingScore score : RankingScore.comparator(Measure.MAP, null, true)
-                    .sortedCopy(queryLines.keySet())) {
+            for (final RankingScore score : RankingScore.comparator(this.sortMeasure,
+                    this.sortMeasureAtNumber, true).sortedCopy(queryLines.keySet())) {
                 writer.append(queryLines.get(score)).append('\n');
             }
         }
@@ -648,6 +714,11 @@ public class PikesIR {
                 }
                 writer.append("\n");
             }
+        }
+
+        if (LOGGER.isInfoEnabled()) {
+            LOGGER.info("Evaluated {} - {} hits, best: {} {}", queryID,
+                    String.format("%4d", hits.size()), bestScore, bestLayers);
         }
     }
 
@@ -726,29 +797,20 @@ public class PikesIR {
                 });
 
         final int count = files.size();
-        final Tracker tracker = new Tracker(LOGGER, "Processing " + count + " files",
-                "Processed %d files (%d files/s avg)",
-                "Processed %d files (%d files/s, %d files/s avg)");
+        LOGGER.info("Processing {} files", count);
 
-        tracker.start();
-        try {
-            Environment.run(files.<Runnable>transform((final File file) -> new Runnable() {
+        Environment.run(files.<Runnable>transform((final File file) -> new Runnable() {
 
-                @Override
-                public void run() {
-                    try {
-                        consumer.accept(file.toPath());
-                    } catch (final Throwable ex) {
-                        throw new RuntimeException("Could not process " + file, ex);
-                    } finally {
-                        tracker.increment();
-                    }
+            @Override
+            public void run() {
+                try {
+                    consumer.accept(file.toPath());
+                } catch (final Throwable ex) {
+                    throw new RuntimeException("Could not process " + file, ex);
                 }
+            }
 
-            }));
-        } finally {
-            tracker.end();
-        }
+        }));
     }
 
     private static int indexOf(final String string, final Pattern pattern) {

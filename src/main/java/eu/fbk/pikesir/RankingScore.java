@@ -195,26 +195,21 @@ public class RankingScore implements Serializable {
                 }
             }
         }
+        final int maxN = ns[count - 1];
 
         final StringBuilder builder = new StringBuilder();
         for (int i = 0; i < count; ++i) {
             n = ns[i];
             builder.append("p@").append(n).append("=")
-                    .append(String.format("%.3f", getPrecision(n))).append(", ");
+                    .append(String.format("%.3f", getPrecision(n))).append(" ");
         }
-        builder.append("mrr=").append(String.format("%.3f", getMRR())).append(", ");
-        builder.append("ndcg=").append(String.format("%.3f", getNDCG())).append(", ");
-        for (int i = 0; i < count; ++i) {
-            n = ns[i];
-            builder.append("ndcg@").append(n).append("=")
-                    .append(String.format("%.3f", getNDCG(n))).append(", ");
-        }
-        builder.append("map=").append(String.format("%.3f", getMAP())).append(", ");
-        for (int i = 0; i < count; ++i) {
-            n = ns[i];
-            builder.append("map@").append(n).append("=").append(String.format("%.3f", getMAP(n)))
-                    .append(", ");
-        }
+        builder.append("mrr=").append(String.format("%.3f", getMRR())).append(" ");
+        builder.append("ndcg=").append(String.format("%.3f", getNDCG())).append(" ");
+        builder.append("ndcg@").append(maxN).append("=")
+                .append(String.format("%.3f", getNDCG(maxN))).append(" ");
+        builder.append("map=").append(String.format("%.3f", getMAP())).append(" ");
+        builder.append("map@").append(maxN).append("=").append(String.format("%.3f", getMAP(n)))
+                .append(" ");
         builder.append("nr=").append(getNumRankings());
 
         return builder.toString();
