@@ -497,7 +497,7 @@ public abstract class Analyzer {
                 }
             }
 
-            for (final Field field : stmts.keys()) {
+            for (final Field field : stmts.keySet()) {
                 for (final Statement stmt : stmts.get(field)) {
                     builder.addTerm(field, stmt.getPredicate().getLocalName());
                 }
