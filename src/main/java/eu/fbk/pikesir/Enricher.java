@@ -7,6 +7,8 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 
+import javax.annotation.Nullable;
+
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -51,10 +53,10 @@ public abstract class Enricher {
         return RDFSEnricher.INSTANCE;
     }
 
-    public static Enricher createURIEnricher(final KeyQuadSource index,
+    public static Enricher createURIEnricher(final Path indexPath,
             final Iterable<String> nonRecursiveNamespaces,
             final Iterable<String> recursiveNamespaces) {
-        return new URIEnricher(index, nonRecursiveNamespaces, recursiveNamespaces);
+        return new URIEnricher(indexPath, nonRecursiveNamespaces, recursiveNamespaces);
     }
 
     public static Enricher create(final Path root, final Properties properties, String prefix) {
@@ -73,8 +75,8 @@ public abstract class Enricher {
             final Set<String> noRecursionNS = ImmutableSet.copyOf(properties.getProperty(
                     prefix + "uri.norecursion", "").split("\\s+"));
             if (!recursionNS.isEmpty() && !noRecursionNS.isEmpty()) {
-                final KeyQuadIndex uriIndex = new KeyQuadIndex(root.resolve(uriIndexPath).toFile());
-                enrichers.add(createURIEnricher(uriIndex, noRecursionNS, recursionNS));
+                enrichers.add(createURIEnricher(root.resolve(uriIndexPath), noRecursionNS,
+                        recursionNS));
             }
         }
 
@@ -124,7 +126,7 @@ public abstract class Enricher {
                 final int numTriplesBefore = model.size();
                 RDFProcessors.rdfs(RDFSources.wrap(ImmutableList.copyOf(model)), SESAME.NIL, true,
                         true, "rdfs4a", "rdfs4b", "rdfs8").apply(RDFSources.NIL,
-                                RDFHandlers.wrap(model), 1);
+                        RDFHandlers.wrap(model), 1);
                 LOGGER.debug("Inferred {} triples (total {})", model.size() - numTriplesBefore,
                         model.size());
             } catch (final RDFHandlerException ex) {
@@ -136,16 +138,20 @@ public abstract class Enricher {
 
     private static final class URIEnricher extends Enricher {
 
-        private final KeyQuadSource index;
+        private final Path indexPath;
+
+        @Nullable
+        private KeyQuadSource index;
 
         private final Set<String> nonRecursiveNamespaces;
 
         private final Set<String> recursiveNamespaces;
 
-        URIEnricher(final KeyQuadSource index, final Iterable<String> nonRecursiveNamespaces,
+        URIEnricher(final Path indexPath, final Iterable<String> nonRecursiveNamespaces,
                 final Iterable<String> recursiveNamespaces) {
 
-            this.index = Objects.requireNonNull(index);
+            this.indexPath = Objects.requireNonNull(indexPath);
+            this.index = null;
             this.nonRecursiveNamespaces = nonRecursiveNamespaces == null ? ImmutableSet.of()
                     : ImmutableSet.copyOf(nonRecursiveNamespaces);
             this.recursiveNamespaces = recursiveNamespaces == null ? ImmutableSet.of()
@@ -164,7 +170,7 @@ public abstract class Enricher {
 
             try {
                 final int numTriplesBefore = model.size();
-                this.index.getRecursive(uris, (final Value v) -> {
+                getIndex().getRecursive(uris, (final Value v) -> {
                     return matches(v, this.recursiveNamespaces);
                 }, RDFHandlers.wrap(model));
                 LOGGER.debug("Enriched {} URIs with {} triples", uris.size(), model.size()
@@ -192,6 +198,13 @@ public abstract class Enricher {
                 }
             }
             return false;
+        }
+
+        private synchronized KeyQuadSource getIndex() {
+            if (this.index == null) {
+                this.index = new KeyQuadIndex(this.indexPath.toFile());
+            }
+            return this.index;
         }
 
     }

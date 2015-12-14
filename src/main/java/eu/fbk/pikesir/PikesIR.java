@@ -22,8 +22,6 @@ import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import javax.annotation.Nullable;
-
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
@@ -64,6 +62,7 @@ import ixa.kaflib.KAFDocument;
 
 import eu.fbk.pikesir.RankingScore.Measure;
 import eu.fbk.pikesir.util.CommandLine;
+import eu.fbk.pikesir.util.Util;
 import eu.fbk.rdfpro.AbstractRDFHandlerWrapper;
 import eu.fbk.rdfpro.RDFHandlers;
 import eu.fbk.rdfpro.RDFSources;
@@ -260,8 +259,9 @@ public class PikesIR {
         }
 
         // Retrieve layer boosts and repetitions settings
-        this.layerBoosts = parseMap(properties.getProperty(pr + "layers.boosts"), Double.class);
-        this.layerRepetitions = parseMap(properties.getProperty(pr + "layers.repetitions"),
+        this.layerBoosts = Util.parseMap(properties.getProperty(pr + "layers.boosts"),
+                Double.class);
+        this.layerRepetitions = Util.parseMap(properties.getProperty(pr + "layers.repetitions"),
                 Integer.class);
 
         // Build the enricher
@@ -456,7 +456,12 @@ public class PikesIR {
 
                     @Override
                     public void run() {
-                        searchHelper(searcher, queryID, queryVector, queryRels, evaluators, docIDs);
+                        try {
+                            searchHelper(searcher, queryID, queryVector, queryRels, evaluators,
+                                    docIDs);
+                        } catch (final Throwable ex) {
+                            throw Throwables.propagate(ex);
+                        }
                     }
 
                 });
@@ -500,7 +505,7 @@ public class PikesIR {
     private void searchHelper(final IndexSearcher searcher, final String queryID,
             final TermVector queryVector, final Map<String, Double> rels,
             final Map<List<String>, RankingScore.Evaluator> evaluators,
-            final Map<Integer, String> docIDs) {
+            final Map<Integer, String> docIDs) throws IOException, ParseException {
 
         LOGGER.info("Evaluating query {}", queryID);
 
@@ -535,61 +540,69 @@ public class PikesIR {
             if (!queryString.isEmpty()) {
                 availableLayers.add(layer);
                 final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
-                try {
-                    final Query query = parser.parse(queryString);
-                    final TopDocs results = searcher.search(query, 1000);
-                    LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length,
-                            queryString);
-                    for (final ScoreDoc scoreDoc : results.scoreDocs) {
-                        String docID = docIDs.get(scoreDoc.doc);
-                        if (docID == null) {
-                            docID = searcher.doc(scoreDoc.doc, ImmutableSet.of("id")).get("id");
-                            docIDs.put(scoreDoc.doc, docID);
-                        }
-                        Hit hit = hits.get(docID);
-                        if (hit == null) {
-                            hit = new Hit(docID);
-                            hits.put(docID, hit);
-                        }
-                        hit.setLayerScore(layer, scoreDoc.score);
+                final Query query = parser.parse(queryString);
+                final TopDocs results = searcher.search(query, 1000);
+                LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length,
+                        queryString);
+                for (final ScoreDoc scoreDoc : results.scoreDocs) {
+                    String docID = docIDs.get(scoreDoc.doc);
+                    if (docID == null) {
+                        docID = searcher.doc(scoreDoc.doc, ImmutableSet.of("id")).get("id");
+                        docIDs.put(scoreDoc.doc, docID);
                     }
-                } catch (ParseException | IOException ex) {
-                    Throwables.propagate(ex);
+                    Hit hit = hits.get(docID);
+                    if (hit == null) {
+                        hit = new Hit(docID);
+                        hits.put(docID, hit);
+                    }
+                    hit.setLayerScore(layer, scoreDoc.score);
                 }
             }
         }
 
-        for (final Map.Entry<List<String>, RankingScore.Evaluator> entry : evaluators.entrySet()) {
+        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
+                .resolve(queryID + ".csv").toAbsolutePath().toString())))) {
 
-            final List<String> allLayers = entry.getKey();
-            final List<String> queryLayers = Lists.newArrayList();
-            for (final String layer : allLayers) {
-                if (availableLayers.contains(layer)) {
-                    queryLayers.add(layer);
-                }
-            }
+            writer.append("layers;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10\n");
 
-            final RankingScore.Evaluator evaluator = entry.getValue();
-            if (!queryLayers.isEmpty()) {
-                final List<Hit> sortedHits = Lists.newArrayListWithCapacity(hits.size());
-                for (final Hit hit : hits.values()) {
-                    for (final String layer : queryLayers) {
-                        if (hit.getLayerScore(layer) != 0.0) {
-                            sortedHits.add(hit);
-                            break;
-                        }
+            for (final Map.Entry<List<String>, RankingScore.Evaluator> entry : evaluators
+                    .entrySet()) {
+
+                final List<String> allLayers = entry.getKey();
+                final List<String> queryLayers = Lists.newArrayList();
+                for (final String layer : allLayers) {
+                    if (availableLayers.contains(layer)) {
+                        queryLayers.add(layer);
                     }
                 }
-                this.aggregator.aggregate(allLayers, queryLayers, sortedHits);
-                Collections.sort(sortedHits, Hit.comparator(null, true));
-                final List<String> ids = Lists.newArrayListWithCapacity(sortedHits.size());
-                for (final Hit hit : sortedHits) {
-                    ids.add(hit.getDocumentID());
+
+                final RankingScore.Evaluator evaluator = entry.getValue();
+                if (!queryLayers.isEmpty()) {
+                    final List<Hit> sortedHits = Lists.newArrayListWithCapacity(hits.size());
+                    for (final Hit hit : hits.values()) {
+                        for (final String layer : queryLayers) {
+                            if (hit.getLayerScore(layer) != 0.0) {
+                                sortedHits.add(hit);
+                                break;
+                            }
+                        }
+                    }
+                    this.aggregator.aggregate(allLayers, queryLayers, sortedHits);
+                    Collections.sort(sortedHits, Hit.comparator(null, true));
+                    final List<String> ids = Lists.newArrayListWithCapacity(sortedHits.size());
+                    for (final Hit hit : sortedHits) {
+                        ids.add(hit.getDocumentID());
+                    }
+
+                    final RankingScore score = RankingScore.evaluator(10).add(ids, rels).get();
+                    evaluator.add(score);
+
+                    writer.append(Joiner.on(',').join(queryLayers)).append(";")
+                            .append(formatRankingScore(score, ";")).append("\n");
+                } else {
+                    // A rescale factor was previously used here
+                    evaluator.add(ImmutableList.of(), rels);
                 }
-                evaluator.add(ids, rels);
-            } else {
-                // A rescale factor was previously used here
-                evaluator.add(ImmutableList.of(), rels);
             }
         }
     }
@@ -606,30 +619,6 @@ public class PikesIR {
         builder.append(score.getMAP()).append(separator);
         builder.append(score.getMAP(10));
         return builder.toString();
-    }
-
-    private static <T> Map<String, T> parseMap(@Nullable final String string,
-            final Class<T> valueClass) {
-        final Map<String, T> map = Maps.newHashMap();
-        if (string != null) {
-            for (final String entry : string.split("[\\s;]+")) {
-                final int index = Math.max(entry.indexOf(':'), entry.indexOf('='));
-                if (index > 0) {
-                    final String key = entry.substring(0, index).trim();
-                    final String valueString = entry.substring(index + 1);
-                    Object value;
-                    if (valueClass.isAssignableFrom(Double.class)) {
-                        value = Double.valueOf(valueString);
-                    } else if (valueClass.isAssignableFrom(Integer.class)) {
-                        value = Integer.valueOf(valueString);
-                    } else {
-                        throw new Error(valueClass.getName());
-                    }
-                    map.put(key, valueClass.cast(value));
-                }
-            }
-        }
-        return map;
     }
 
     private static Map<String, Map<String, Double>> readRelevances(final Path path)

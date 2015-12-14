@@ -6,8 +6,9 @@ import java.util.Map;
 import java.util.Properties;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
 import com.google.common.primitives.Doubles;
+
+import eu.fbk.pikesir.util.Util;
 
 public abstract class Aggregator {
 
@@ -55,18 +56,8 @@ public abstract class Aggregator {
         // Select the type of aggregator based on property 'type'
         final String type = properties.getProperty(prefix + "type", "sum").trim().toLowerCase();
         if (type.equals("weighted")) {
-            final Map<String, Double> layerWeights = Maps.newHashMap();
-            final String weightsSpec = properties.getProperty(prefix + "weights");
-            if (weightsSpec != null) {
-                for (final String weightSpec : weightsSpec.split("[\\s;]+")) {
-                    final int index = Math.max(weightSpec.indexOf(':'), weightSpec.indexOf('='));
-                    if (index > 0) {
-                        final String layer = weightSpec.substring(0, index).trim();
-                        final Double weight = Double.parseDouble(weightSpec.substring(index + 1));
-                        layerWeights.put(layer, weight);
-                    }
-                }
-            }
+            final Map<String, Double> layerWeights = Util.parseMap(
+                    properties.getProperty(prefix + "weights"), Double.class);
             return createWeightedAggregator(normalize, layerWeights);
         } else if (type.equals("sum")) {
             return createSumAggregator(normalize);
