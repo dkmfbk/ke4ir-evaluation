@@ -13,7 +13,7 @@ import eu.fbk.pikesir.util.Util;
 public abstract class Aggregator {
 
     public abstract void aggregate(final List<String> allLayers, final List<String> queryLayers,
-            final List<Hit> hits);
+            final TermVector queryVector, final List<Hit> hits, final List<TermVector> docVectors);
 
     public static Aggregator createWeightedAggregator(final boolean normalize,
             final Map<String, Double> layerWeights) {
@@ -86,7 +86,8 @@ public abstract class Aggregator {
 
         @Override
         public void aggregate(final List<String> allLayers, final List<String> queryLayers,
-                final List<Hit> hits) {
+                final TermVector queryVector, final List<Hit> hits,
+                final List<TermVector> docVectors) {
 
             // We operate only on query layers, i.e., the layers present in the query
             final String[] layers = queryLayers.toArray(new String[queryLayers.size()]);
@@ -105,19 +106,22 @@ public abstract class Aggregator {
 
             // Assign aggregate scores, delegating to aggregate(double[])
             final double[] scores = new double[numLayers];
-            for (final Hit hit : hits) {
-                for (int i = 0; i < numLayers; ++i) {
-                    double score = hit.getLayerScore(layers[i]);
-                    if (this.normalize && maxScores[i] != 0.0) {
-                        score = score / maxScores[i];
+            for (int i = 0; i < hits.size(); ++i) {
+                final Hit hit = hits.get(i);
+                final TermVector docVector = docVectors.get(i);
+                for (int j = 0; j < numLayers; ++j) {
+                    double score = hit.getLayerScore(layers[j]);
+                    if (this.normalize && maxScores[j] != 0.0) {
+                        score = score / maxScores[j];
                     }
-                    scores[i] = score;
+                    scores[j] = score;
                 }
-                hit.setAggregateScore(aggregate(queryLayers, scores));
+                hit.setAggregateScore(aggregate(queryLayers, queryVector, docVector, scores));
             }
         }
 
-        abstract double aggregate(List<String> layers, double[] scores);
+        abstract double aggregate(List<String> layers, TermVector queryVector,
+                TermVector docVector, double[] scores);
 
         @Override
         public String toString() {
@@ -136,7 +140,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(final List<String> layers, final double[] scores) {
+        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
+                double[] scores) {
             double sum = 0.0;
             double sumWeights = 0.0;
             for (int i = 0; i < scores.length; ++i) {
@@ -165,7 +170,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(final List<String> layers, final double[] scores) {
+        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
+                double[] scores) {
             double sum = 0.0;
             for (int i = 0; i < scores.length; ++i) {
                 sum += scores[i];
@@ -182,7 +188,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(final List<String> layers, final double[] scores) {
+        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
+                double[] scores) {
             double product = 0.0;
             for (int i = 0; i < scores.length; ++i) {
                 product *= scores[i];
@@ -201,7 +208,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(final List<String> layers, final double[] scores) {
+        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
+                double[] scores) {
             double weight = 1.0;
             double sum = 0.0;
             for (int i = 0; i < scores.length; ++i) {
@@ -222,7 +230,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(final List<String> layers, final double[] scores) {
+        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
+                double[] scores) {
             int count = 0;
             double sum = 0.0;
             for (int i = 0; i < scores.length; ++i) {
@@ -243,7 +252,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(final List<String> layers, final double[] scores) {
+        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
+                double[] scores) {
             return Doubles.max(scores);
         }
 
@@ -256,7 +266,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(final List<String> layers, final double[] scores) {
+        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
+                double[] scores) {
             return Doubles.min(scores);
         }
 

@@ -49,6 +49,7 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.IndexSearcher;
@@ -485,6 +486,7 @@ public class PikesIR {
             final IndexSearcher searcher = new IndexSearcher(reader);
             final List<Runnable> queryJobs = Lists.newArrayList();
             final Map<Integer, String> docIDs = Maps.newConcurrentMap();
+            final Map<String, TermVector> docVectors = Maps.newConcurrentMap();
             for (final String queryID : Ordering.natural().sortedCopy(queries.keySet())) {
                 final TermVector queryVector = queries.get(queryID);
                 final Map<String, Double> queryRels = rels.get(queryID);
@@ -493,7 +495,8 @@ public class PikesIR {
                     @Override
                     public void run() {
                         try {
-                            searchHelper(searcher, queryID, queryVector, queryRels, scores, docIDs);
+                            searchHelper(searcher, queryID, queryVector, queryRels, scores,
+                                    docIDs, docVectors);
                         } catch (final Throwable ex) {
                             throw Throwables.propagate(ex);
                         }
@@ -564,7 +567,8 @@ public class PikesIR {
     private void searchHelper(final IndexSearcher searcher, final String queryID,
             final TermVector queryVector, final Map<String, Double> rels,
             final Map<List<String>, Map<String, RankingScore>> scores,
-            final Map<Integer, String> docIDs) throws IOException, ParseException {
+            final Map<Integer, String> docIDs, final Map<String, TermVector> docVectors)
+            throws IOException, ParseException {
 
         // Perform the query on each layer, storing all the hits obtained
         final Map<String, Hit> hits = Maps.newHashMap();
@@ -604,8 +608,11 @@ public class PikesIR {
                 for (final ScoreDoc scoreDoc : results.scoreDocs) {
                     String docID = docIDs.get(scoreDoc.doc);
                     if (docID == null) {
+                        final Document doc = searcher.doc(scoreDoc.doc);
                         docID = searcher.doc(scoreDoc.doc, ImmutableSet.of("id")).get("id");
                         docIDs.put(scoreDoc.doc, docID);
+                        final TermVector docVector = toTermVector(doc);
+                        docVectors.put(docID, docVector);
                     }
                     Hit hit = hits.get(docID);
                     if (hit == null) {
@@ -634,15 +641,19 @@ public class PikesIR {
             final Map<String, RankingScore> queryScores = entry.getValue();
             if (!queryLayers.isEmpty()) {
                 final List<Hit> sortedHits = Lists.newArrayListWithCapacity(hits.size());
+                final List<TermVector> sortedDocVectors = Lists.newArrayListWithCapacity(hits
+                        .size());
                 for (final Hit hit : hits.values()) {
                     for (final String layer : queryLayers) {
                         if (hit.getLayerScore(layer) != 0.0) {
                             sortedHits.add(hit);
+                            sortedDocVectors.add(docVectors.get(hit.getDocumentID()));
                             break;
                         }
                     }
                 }
-                this.aggregator.aggregate(allLayers, queryLayers, sortedHits);
+                this.aggregator.aggregate(allLayers, queryLayers, queryVector, sortedHits,
+                        sortedDocVectors);
                 Collections.sort(sortedHits, Hit.comparator(null, true));
                 final List<String> ids = Lists.newArrayListWithCapacity(sortedHits.size());
                 for (final Hit hit : sortedHits) {
@@ -720,6 +731,24 @@ public class PikesIR {
             LOGGER.info("Evaluated {} - {} hits, best: {} {}", queryID,
                     String.format("%4d", hits.size()), bestScore, Joiner.on(',').join(bestLayers));
         }
+    }
+
+    private static TermVector toTermVector(final Document document) {
+        final TermVector.Builder builder = TermVector.builder();
+        for (final IndexableField field : document.getFields()) {
+            final String name = field.name();
+            if (!"id".equals(name)) {
+                final String value = field.stringValue();
+                try {
+                    final Field f = Field.forID(name);
+                    builder.addTerm(f, value);
+                } catch (final Throwable ex) {
+                    // Ignore
+                }
+            }
+        }
+        final TermVector vector = builder.build();
+        return vector;
     }
 
     private static String formatRankingScore(final RankingScore score, final String separator) {
