@@ -2,8 +2,11 @@ package eu.fbk.pikesir;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Maps;
 import com.google.common.primitives.Doubles;
 
 public abstract class Aggregator {
@@ -11,28 +14,33 @@ public abstract class Aggregator {
     public abstract void aggregate(final List<String> allLayers, final List<String> queryLayers,
             final List<Hit> hits);
 
-    public static Aggregator createSumAggregator() {
-        return SumAggregator.INSTANCE;
+    public static Aggregator createWeightedAggregator(final boolean normalize,
+            final Map<String, Double> layerWeights) {
+        return new WeightedAggregator(normalize, layerWeights);
     }
 
-    public static Aggregator createProductAggregator() {
-        return ProductAggregator.INSTANCE;
+    public static Aggregator createSumAggregator(final boolean normalize) {
+        return new SumAggregator(normalize);
     }
 
-    public static Aggregator createPrioritizedAggregator() {
-        return PrioritizedAggregator.INSTANCE;
+    public static Aggregator createProductAggregator(final boolean normalize) {
+        return new ProductAggregator(normalize);
     }
 
-    public static Aggregator createMeanAggregator() {
-        return MeanAggregator.INSTANCE;
+    public static Aggregator createPrioritizedAggregator(final boolean normalize) {
+        return new PrioritizedAggregator(normalize);
     }
 
-    public static Aggregator createMaxAggregator() {
-        return MaxAggregator.INSTANCE;
+    public static Aggregator createMeanAggregator(final boolean normalize) {
+        return new MeanAggregator(normalize);
     }
 
-    public static Aggregator createMinAggregator() {
-        return MinAggregator.INSTANCE;
+    public static Aggregator createMaxAggregator(final boolean normalize) {
+        return new MaxAggregator(normalize);
+    }
+
+    public static Aggregator createMinAggregator(final boolean normalize) {
+        return new MinAggregator(normalize);
     }
 
     public static Aggregator create(final Path root, final Properties properties, String prefix) {
@@ -40,26 +48,50 @@ public abstract class Aggregator {
         // Normalize prefix, ensuring it ends with '.'
         prefix = prefix.endsWith(".") ? prefix : prefix + ".";
 
+        // Determine whether normalization is enabled or not
+        final boolean normalize = Boolean.parseBoolean(properties.getProperty(
+                prefix + "normalize", "false"));
+
         // Select the type of aggregator based on property 'type'
         final String type = properties.getProperty(prefix + "type", "sum").trim().toLowerCase();
-        if (type.equals("sum")) {
-            return createSumAggregator();
+        if (type.equals("weighted")) {
+            final Map<String, Double> layerWeights = Maps.newHashMap();
+            final String weightsSpec = properties.getProperty(prefix + "weights");
+            if (weightsSpec != null) {
+                for (final String weightSpec : weightsSpec.split("[\\s;]+")) {
+                    final int index = Math.max(weightSpec.indexOf(':'), weightSpec.indexOf('='));
+                    if (index > 0) {
+                        final String layer = weightSpec.substring(0, index).trim();
+                        final Double weight = Double.parseDouble(weightSpec.substring(index + 1));
+                        layerWeights.put(layer, weight);
+                    }
+                }
+            }
+            return createWeightedAggregator(normalize, layerWeights);
+        } else if (type.equals("sum")) {
+            return createSumAggregator(normalize);
         } else if (type.equals("product")) {
-            return createProductAggregator();
+            return createProductAggregator(normalize);
         } else if (type.equals("prioritized")) {
-            return createPrioritizedAggregator();
+            return createPrioritizedAggregator(normalize);
         } else if (type.equals("mean")) {
-            return createMeanAggregator();
+            return createMeanAggregator(normalize);
         } else if (type.equals("max")) {
-            return createMaxAggregator();
+            return createMaxAggregator(normalize);
         } else if (type.equals("min")) {
-            return createMinAggregator();
+            return createMinAggregator(normalize);
         } else {
             throw new IllegalArgumentException("Invalid aggregator type '" + type + "'");
         }
     }
 
     private static abstract class SimpleAggregator extends Aggregator {
+
+        final boolean normalize;
+
+        SimpleAggregator(final boolean normalize) {
+            this.normalize = normalize;
+        }
 
         @Override
         public void aggregate(final List<String> allLayers, final List<String> queryLayers,
@@ -69,11 +101,14 @@ public abstract class Aggregator {
             final String[] layers = queryLayers.toArray(new String[queryLayers.size()]);
             final int numLayers = layers.length;
 
-            // Obtain max scores for each layer, required for normalization
-            final double[] maxScores = new double[numLayers];
-            for (final Hit hit : hits) {
-                for (int i = 0; i < numLayers; ++i) {
-                    maxScores[i] = Math.max(maxScores[i], hit.getLayerScore(layers[i]));
+            // If normalization is enabled, obtain max scores for each layer
+            double[] maxScores = null;
+            if (this.normalize) {
+                maxScores = new double[numLayers];
+                for (final Hit hit : hits) {
+                    for (int i = 0; i < numLayers; ++i) {
+                        maxScores[i] = Math.max(maxScores[i], hit.getLayerScore(layers[i]));
+                    }
                 }
             }
 
@@ -81,25 +116,65 @@ public abstract class Aggregator {
             final double[] scores = new double[numLayers];
             for (final Hit hit : hits) {
                 for (int i = 0; i < numLayers; ++i) {
-                    final double maxScore = maxScores[i];
-                    //scores[i] = hit.getLayerScore(layers[i]);
-                    scores[i] = maxScores[i] == 0.0 ? 0.0 : hit.getLayerScore(layers[i])
-                            / maxScore;
+                    double score = hit.getLayerScore(layers[i]);
+                    if (this.normalize && maxScores[i] != 0.0) {
+                        score = score / maxScores[i];
+                    }
+                    scores[i] = score;
                 }
-                hit.setAggregateScore(aggregate(scores));
+                hit.setAggregateScore(aggregate(queryLayers, scores));
             }
         }
 
-        abstract double aggregate(double[] scores);
+        abstract double aggregate(List<String> layers, double[] scores);
+
+        @Override
+        public String toString() {
+            return getClass().getSimpleName() + "(normalize: " + this.normalize + ")";
+        }
+
+    }
+
+    private static final class WeightedAggregator extends SimpleAggregator {
+
+        private final Map<String, Double> layerWeights;
+
+        WeightedAggregator(final boolean normalize, final Map<String, Double> layerWeights) {
+            super(normalize);
+            this.layerWeights = ImmutableMap.copyOf(layerWeights);
+        }
+
+        @Override
+        double aggregate(final List<String> layers, final double[] scores) {
+            double sum = 0.0;
+            double sumWeights = 0.0;
+            for (int i = 0; i < scores.length; ++i) {
+                final String layer = layers.get(i);
+                final Double weight = this.layerWeights.get(layer);
+                if (weight != null) {
+                    sum += weight * scores[i];
+                    sumWeights += weight;
+                }
+            }
+            return sumWeights == 0.0 ? 0.0 : sum / sumWeights;
+        }
+
+        @Override
+        public String toString() {
+            return getClass().getSimpleName() + "(normalize: " + this.normalize + ", weights: "
+                    + this.layerWeights + ")";
+        }
 
     }
 
     private static final class SumAggregator extends SimpleAggregator {
 
-        static final SumAggregator INSTANCE = new SumAggregator();
+        SumAggregator(final boolean normalize) {
+            super(normalize);
+        }
 
         @Override
-        double aggregate(final double[] scores) {
+        double aggregate(final List<String> layers, final double[] scores) {
             double sum = 0.0;
             for (int i = 0; i < scores.length; ++i) {
                 sum += scores[i];
@@ -111,10 +186,12 @@ public abstract class Aggregator {
 
     private static final class ProductAggregator extends SimpleAggregator {
 
-        static final ProductAggregator INSTANCE = new ProductAggregator();
+        ProductAggregator(final boolean normalize) {
+            super(normalize);
+        }
 
         @Override
-        double aggregate(final double[] scores) {
+        double aggregate(final List<String> layers, final double[] scores) {
             double product = 0.0;
             for (int i = 0; i < scores.length; ++i) {
                 product *= scores[i];
@@ -128,10 +205,12 @@ public abstract class Aggregator {
 
         // copyright DragoTech :-)
 
-        static final PrioritizedAggregator INSTANCE = new PrioritizedAggregator();
+        PrioritizedAggregator(final boolean normalize) {
+            super(normalize);
+        }
 
         @Override
-        double aggregate(final double[] scores) {
+        double aggregate(final List<String> layers, final double[] scores) {
             double weight = 1.0;
             double sum = 0.0;
             for (int i = 0; i < scores.length; ++i) {
@@ -147,10 +226,12 @@ public abstract class Aggregator {
 
     private static final class MeanAggregator extends SimpleAggregator {
 
-        static final MeanAggregator INSTANCE = new MeanAggregator();
+        MeanAggregator(final boolean normalize) {
+            super(normalize);
+        }
 
         @Override
-        double aggregate(final double[] scores) {
+        double aggregate(final List<String> layers, final double[] scores) {
             int count = 0;
             double sum = 0.0;
             for (int i = 0; i < scores.length; ++i) {
@@ -166,10 +247,12 @@ public abstract class Aggregator {
 
     private static final class MaxAggregator extends SimpleAggregator {
 
-        static final MaxAggregator INSTANCE = new MaxAggregator();
+        MaxAggregator(final boolean normalize) {
+            super(normalize);
+        }
 
         @Override
-        double aggregate(final double[] scores) {
+        double aggregate(final List<String> layers, final double[] scores) {
             return Doubles.max(scores);
         }
 
@@ -177,10 +260,12 @@ public abstract class Aggregator {
 
     private static final class MinAggregator extends SimpleAggregator {
 
-        static final MinAggregator INSTANCE = new MinAggregator();
+        MinAggregator(final boolean normalize) {
+            super(normalize);
+        }
 
         @Override
-        double aggregate(final double[] scores) {
+        double aggregate(final List<String> layers, final double[] scores) {
             return Doubles.min(scores);
         }
 

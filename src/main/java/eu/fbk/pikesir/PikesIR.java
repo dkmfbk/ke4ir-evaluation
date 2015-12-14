@@ -121,20 +121,20 @@ public class PikesIR {
                     .withName("pikesir")
                     .withOption("p", "properties", "specifies the configuration properties file",
                             "PATH", CommandLine.Type.FILE_EXISTING, true, false, false)
-                            .withOption("e", "enrich", "enriches the RDF of both documents and queries")
-                            .withOption(null, "enrich-docs", "enriches the RDF of documents only")
-                            .withOption(null, "enrich-queries", "enriches the RDF of queries only")
-                            .withOption("a", "analyze",
-                                    "analyzes both documents and queries (NAF + RDF enriched)")
-                                    .withOption(null, "analyze-docs",
-                                            "analyzes documents only (NAF + RDF enriched)")
-                                            .withOption(null, "analyze-queries",
-                                                    "analyzes queries only (NAF + RDF enriched)")
-                                                    .withOption("i", "index", "indexes document terms in Lucene")
-                                                    .withOption("s", "search", "evaluates queries over Lucene index")
-                                                    .withHeader("supports all the operations involved in the evaluation of " //
-                                                            + "semantic information retrieval: enrichment, analysis, " //
-                                                            + "indexing, search").parse(args);
+                    .withOption("e", "enrich", "enriches the RDF of both documents and queries")
+                    .withOption(null, "enrich-docs", "enriches the RDF of documents only")
+                    .withOption(null, "enrich-queries", "enriches the RDF of queries only")
+                    .withOption("a", "analyze",
+                            "analyzes both documents and queries (NAF + RDF enriched)")
+                    .withOption(null, "analyze-docs",
+                            "analyzes documents only (NAF + RDF enriched)")
+                    .withOption(null, "analyze-queries",
+                            "analyzes queries only (NAF + RDF enriched)")
+                    .withOption("i", "index", "indexes document terms in Lucene")
+                    .withOption("s", "search", "evaluates queries over Lucene index")
+                    .withHeader("supports all the operations involved in the evaluation of " //
+                            + "semantic information retrieval: enrichment, analysis, " //
+                            + "indexing, search").parse(args);
 
             // Extract options
             final Path propertiesPath = Paths.get(cmd.getOptionValue("p", String.class,
@@ -240,6 +240,7 @@ public class PikesIR {
 
         // Build the aggregator
         this.aggregator = Aggregator.create(root, properties, "pikesir.aggregator.");
+        LOGGER.info("Using {}", this.aggregator);
     }
 
     public void enrichDocs() throws IOException {
@@ -360,7 +361,11 @@ public class PikesIR {
                 final Document doc = new Document();
                 doc.add(new TextField("id", entry.getKey(), Store.YES));
                 for (final Term term : entry.getValue().getTerms()) {
-                    for (int i = 0; i < (int) Math.ceil(term.getWeight()); ++i) {
+                    int count = (int) Math.ceil(term.getWeight());
+                    if (term.getField() != Field.STEM) {
+                        count = 1; // TODO
+                    }
+                    for (int i = 0; i < count; ++i) {
                         doc.add(new TextField(term.getField().getID(), term.getValue(), Store.YES));
                     }
                     ++numTerms;
@@ -435,7 +440,7 @@ public class PikesIR {
                 final RankingScore score = entry.getValue().get();
                 scores.put(score, layers);
                 writer.append(Joiner.on(",").join(layers)).append(";")
-                .append(formatRankingScore(score, ";")).append("\n");
+                        .append(formatRankingScore(score, ";")).append("\n");
             }
         }
 
@@ -475,10 +480,20 @@ public class PikesIR {
             String separator = "";
             for (final Field field : this.layerFields.get(layer)) {
                 for (final Term term : queryVector.getTerms(field)) {
-                    builder.append(separator);
-                    builder.append(field.getID()).append(":\"").append(term.getValue())
-                    .append("\"");
-                    separator = " OR ";
+                    // TODO
+                    if (layer.equals("textual")) {
+                        for (int i = 0; i < 4; ++i) {
+                            builder.append(separator);
+                            builder.append(field.getID()).append(":\"").append(term.getValue())
+                                    .append("\"");
+                            separator = " OR ";
+                        }
+                    } else {
+                        builder.append(separator);
+                        builder.append(field.getID()).append(":\"").append(term.getValue())
+                                .append("\"");
+                        separator = " OR ";
+                    }
                 }
             }
             final String queryString = builder.toString();
