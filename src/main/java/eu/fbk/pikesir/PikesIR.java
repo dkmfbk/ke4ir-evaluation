@@ -30,12 +30,14 @@ import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
+import com.google.common.primitives.Doubles;
 
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.document.Document;
@@ -560,49 +562,91 @@ public class PikesIR {
             }
         }
 
-        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
-                .resolve(queryID + ".csv").toAbsolutePath().toString())))) {
+        final Map<RankingScore, String> queryLines = Maps.newIdentityHashMap();
 
-            writer.append("layers;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10\n");
+        for (final Map.Entry<List<String>, RankingScore.Evaluator> entry : evaluators.entrySet()) {
 
-            for (final Map.Entry<List<String>, RankingScore.Evaluator> entry : evaluators
-                    .entrySet()) {
-
-                final List<String> allLayers = entry.getKey();
-                final List<String> queryLayers = Lists.newArrayList();
-                for (final String layer : allLayers) {
-                    if (availableLayers.contains(layer)) {
-                        queryLayers.add(layer);
-                    }
+            final List<String> allLayers = entry.getKey();
+            final List<String> queryLayers = Lists.newArrayList();
+            for (final String layer : allLayers) {
+                if (availableLayers.contains(layer)) {
+                    queryLayers.add(layer);
                 }
+            }
 
-                final RankingScore.Evaluator evaluator = entry.getValue();
-                if (!queryLayers.isEmpty()) {
-                    final List<Hit> sortedHits = Lists.newArrayListWithCapacity(hits.size());
-                    for (final Hit hit : hits.values()) {
-                        for (final String layer : queryLayers) {
-                            if (hit.getLayerScore(layer) != 0.0) {
-                                sortedHits.add(hit);
-                                break;
-                            }
+            final RankingScore.Evaluator evaluator = entry.getValue();
+            if (!queryLayers.isEmpty()) {
+                final List<Hit> sortedHits = Lists.newArrayListWithCapacity(hits.size());
+                for (final Hit hit : hits.values()) {
+                    for (final String layer : queryLayers) {
+                        if (hit.getLayerScore(layer) != 0.0) {
+                            sortedHits.add(hit);
+                            break;
                         }
                     }
-                    this.aggregator.aggregate(allLayers, queryLayers, sortedHits);
-                    Collections.sort(sortedHits, Hit.comparator(null, true));
-                    final List<String> ids = Lists.newArrayListWithCapacity(sortedHits.size());
-                    for (final Hit hit : sortedHits) {
-                        ids.add(hit.getDocumentID());
-                    }
-
-                    final RankingScore score = RankingScore.evaluator(10).add(ids, rels).get();
-                    evaluator.add(score);
-
-                    writer.append(Joiner.on(',').join(queryLayers)).append(";")
-                            .append(formatRankingScore(score, ";")).append("\n");
-                } else {
-                    // A rescale factor was previously used here
-                    evaluator.add(ImmutableList.of(), rels);
                 }
+                this.aggregator.aggregate(allLayers, queryLayers, sortedHits);
+                Collections.sort(sortedHits, Hit.comparator(null, true));
+                final List<String> ids = Lists.newArrayListWithCapacity(sortedHits.size());
+                for (final Hit hit : sortedHits) {
+                    ids.add(hit.getDocumentID());
+                }
+
+                final RankingScore score = RankingScore.evaluator(10).add(ids, rels).get();
+                evaluator.add(score);
+
+                queryLines.put(score,
+                        Joiner.on(',').join(queryLayers) + ';' + formatRankingScore(score, ";")
+                                + ';' + Joiner.on(",").join(Iterables.limit(sortedHits, 10)));
+            } else {
+                // A rescale factor was previously used here
+                evaluator.add(ImmutableList.of(), rels);
+            }
+        }
+
+        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
+                .resolve(queryID + ".csv").toAbsolutePath().toString())))) {
+            writer.append("layers;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10;ranking (top 10)\n");
+            for (final RankingScore score : RankingScore.comparator(Measure.MAP, null, true)
+                    .sortedCopy(queryLines.keySet())) {
+                writer.append(queryLines.get(score)).append('\n');
+            }
+        }
+
+        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
+                .resolve(queryID + "-rank.csv").toAbsolutePath().toString())))) {
+            final List<List<Hit>> sortedHits = Lists.newArrayList();
+            for (final String layer : this.layers) {
+                sortedHits.add(Hit.comparator(layer, true).sortedCopy(hits.values()));
+                writer.append(layer).append(";;;");
+            }
+            writer.append(";;\n");
+            final int numLayers = this.layers.size();
+            final int numRows = Math.min(50, hits.size());
+            final String[] rowIDs = new String[numLayers];
+            final double[] rowScores = new double[numLayers];
+            for (int i = 0; i < numRows; ++i) {
+                for (int j = 0; j < numLayers; ++j) {
+                    final String layer = this.layers.get(j);
+                    final Hit hit = sortedHits.get(j).get(i);
+                    rowIDs[j] = hit.getDocumentID();
+                    rowScores[j] = hit.getLayerScore(layer);
+                }
+                if (Doubles.max(rowScores) == 0.0) {
+                    break;
+                }
+                for (int j = 0; j < numLayers; ++j) {
+                    final double score = rowScores[j];
+                    if (score == 0.0) {
+                        writer.append(";;;");
+                    } else {
+                        final String id = rowIDs[j];
+                        final Double rel = rels.get(id);
+                        writer.append(id).append(rel == null ? "" : " (" + rel + ")").append(';')
+                                .append(Double.toString(score)).append(";;");
+                    }
+                }
+                writer.append("\n");
             }
         }
     }
