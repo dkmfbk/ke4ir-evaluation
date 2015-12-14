@@ -22,6 +22,8 @@ import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.annotation.Nullable;
+
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
@@ -102,9 +104,15 @@ public class PikesIR {
 
     private final Path pathResults;
 
+    private final Set<Field> weightedFields;
+
     private final List<String> layers;
 
     private final Multimap<String, Field> layerFields;
+
+    private final Map<String, Integer> layerRepetitions;
+
+    private final Map<String, Double> layerBoosts;
 
     private final Enricher enricher;
 
@@ -139,12 +147,12 @@ public class PikesIR {
             // Extract options
             final Path propertiesPath = Paths.get(cmd.getOptionValue("p", String.class,
                     System.getProperty("user.dir") + "/pikesir.properties"));
-            final boolean enrichDocs = cmd.hasOption("enrich-docs") || cmd.hasOption("e");
-            final boolean enrichQueries = cmd.hasOption("enrich-queries") || cmd.hasOption("e");
-            final boolean analyzeDocs = cmd.hasOption("analyze-docs") || cmd.hasOption("a");
-            final boolean analyzeQueries = cmd.hasOption("analyze-queries") || cmd.hasOption("a");
-            final boolean index = cmd.hasOption("i");
-            final boolean search = cmd.hasOption("s");
+            boolean enrichDocs = cmd.hasOption("enrich-docs") || cmd.hasOption("e");
+            boolean enrichQueries = cmd.hasOption("enrich-queries") || cmd.hasOption("e");
+            boolean analyzeDocs = cmd.hasOption("analyze-docs") || cmd.hasOption("a");
+            boolean analyzeQueries = cmd.hasOption("analyze-queries") || cmd.hasOption("a");
+            boolean index = cmd.hasOption("i");
+            boolean search = cmd.hasOption("s");
 
             // Abort if properties file does not exist
             if (!Files.exists(propertiesPath)) {
@@ -157,6 +165,18 @@ public class PikesIR {
             try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(propertiesPath.toString())))) {
                 properties.load(reader);
             }
+
+            // Force certain actions if specified in properties file
+            final String pr = "pikesir.forcecmd.";
+            enrichDocs |= Boolean.parseBoolean(properties.getProperty(pr + "enrichdocs", "false"));
+            enrichQueries |= Boolean.parseBoolean(properties.getProperty( //
+                    pr + "enrichqueries", "false"));
+            analyzeDocs |= Boolean.parseBoolean(properties.getProperty( //
+                    pr + "analyzedocs", "false"));
+            analyzeQueries |= Boolean.parseBoolean(properties.getProperty( //
+                    pr + "analyzequeries", "false"));
+            index |= Boolean.parseBoolean(properties.getProperty(pr + "index", "false"));
+            search |= Boolean.parseBoolean(properties.getProperty(pr + "search", "false"));
 
             // Initialize the PikesIR main object
             final PikesIR pikesIR = new PikesIR(propertiesPath.getParent(), properties, "pikesir.");
@@ -217,6 +237,13 @@ public class PikesIR {
         // Retrieve results path
         this.pathResults = root.resolve(properties.getProperty(pr + "results", "results"));
 
+        // Retrieve weighted fields
+        this.weightedFields = Sets.newEnumSet(ImmutableSet.of(), Field.class);
+        for (final String fieldSpec : properties.getProperty(pr + "index.weightedfields", "")
+                .split("[\\s,;]+")) {
+            this.weightedFields.add(Field.forID(fieldSpec.trim()));
+        }
+
         // Retrieve layers and associated fields
         this.layers = Lists.newArrayList();
         this.layerFields = HashMultimap.create();
@@ -232,6 +259,11 @@ public class PikesIR {
             }
         }
 
+        // Retrieve layer boosts and repetitions settings
+        this.layerBoosts = parseMap(properties.getProperty(pr + "layers.boosts"), Double.class);
+        this.layerRepetitions = parseMap(properties.getProperty(pr + "layers.repetitions"),
+                Integer.class);
+
         // Build the enricher
         this.enricher = Enricher.create(root, properties, "pikesir.enricher.");
 
@@ -244,11 +276,11 @@ public class PikesIR {
     }
 
     public void enrichDocs() throws IOException {
-        enrichHelper(this.pathDocsRDF, this.pathDocsRDFE, "Enriching documents");
+        enrichHelper(this.pathDocsRDF, this.pathDocsRDFE, "=== Enriching documents ===");
     }
 
     public void enrichQueries() throws IOException {
-        enrichHelper(this.pathQueriesRDF, this.pathQueriesRDFE, "Enriching queries");
+        enrichHelper(this.pathQueriesRDF, this.pathQueriesRDFE, "=== Enriching queries ===");
     }
 
     private void enrichHelper(final Path pathSource, final Path pathDest, final String message)
@@ -284,12 +316,12 @@ public class PikesIR {
 
     public void analyzeDocs() throws IOException {
         analyzeHelper(this.pathDocsNAF, this.pathDocsRDFE, this.pathDocsTerms,
-                "Analyzing documents", false);
+                "=== Analyzing documents ===", false);
     }
 
     public void analyzeQueries() throws IOException {
         analyzeHelper(this.pathQueriesNAF, this.pathQueriesRDFE, this.pathQueriesTerms,
-                "Analyzing queries", true);
+                "=== Analyzing queries ===", true);
     }
 
     private void analyzeHelper(final Path pathNAF, final Path pathRDFE, final Path pathTerms,
@@ -339,7 +371,7 @@ public class PikesIR {
     public void index() throws IOException {
 
         final long ts = System.currentTimeMillis();
-        LOGGER.info("Building Lucene index");
+        LOGGER.info("=== Building Lucene index ===");
 
         // Create index directory if necessary and wipe out existing directory contents
         initDir(this.pathIndex);
@@ -361,12 +393,14 @@ public class PikesIR {
                 final Document doc = new Document();
                 doc.add(new TextField("id", entry.getKey(), Store.YES));
                 for (final Term term : entry.getValue().getTerms()) {
-                    int count = (int) Math.ceil(term.getWeight());
-                    if (term.getField() != Field.STEM) {
-                        count = 1; // TODO
-                    }
-                    for (int i = 0; i < count; ++i) {
-                        doc.add(new TextField(term.getField().getID(), term.getValue(), Store.YES));
+                    final String fieldID = term.getField().getID();
+                    final String fieldValue = term.getValue();
+                    if (this.weightedFields.contains(term.getField())) {
+                        for (int i = 0; i < (int) Math.ceil(term.getWeight()); ++i) {
+                            doc.add(new TextField(fieldID, fieldValue, Store.YES));
+                        }
+                    } else {
+                        doc.add(new TextField(fieldID, fieldValue, Store.YES));
                     }
                     ++numTerms;
                 }
@@ -381,7 +415,7 @@ public class PikesIR {
     public void search() throws IOException {
 
         final long ts = System.currentTimeMillis();
-        LOGGER.info("Searching Lucene index");
+        LOGGER.info("=== Searching Lucene index ===");
 
         // Read relevances
         final Map<String, Map<String, Double>> rels = readRelevances(this.pathQueriesRelevances);
@@ -475,23 +509,22 @@ public class PikesIR {
         final Set<String> availableLayers = Sets.newHashSet();
         for (final String layer : this.layers) {
 
+            // Retrieve boost and repetitions for current layer
+            final double boost = this.layerBoosts.getOrDefault(layer, 1.0);
+            final int repetitions = this.layerRepetitions.getOrDefault(layer, 1);
+
             // Compose query
             final StringBuilder builder = new StringBuilder();
             String separator = "";
             for (final Field field : this.layerFields.get(layer)) {
                 for (final Term term : queryVector.getTerms(field)) {
-                    // TODO
-                    if (layer.equals("textual")) {
-                        for (int i = 0; i < 4; ++i) {
-                            builder.append(separator);
-                            builder.append(field.getID()).append(":\"").append(term.getValue())
-                                    .append("\"");
-                            separator = " OR ";
-                        }
-                    } else {
+                    for (int i = 0; i < repetitions; ++i) {
                         builder.append(separator);
                         builder.append(field.getID()).append(":\"").append(term.getValue())
                                 .append("\"");
+                        if (boost != 1.0) {
+                            builder.append("^").append(boost);
+                        }
                         separator = " OR ";
                     }
                 }
@@ -505,6 +538,8 @@ public class PikesIR {
                 try {
                     final Query query = parser.parse(queryString);
                     final TopDocs results = searcher.search(query, 1000);
+                    LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length,
+                            queryString);
                     for (final ScoreDoc scoreDoc : results.scoreDocs) {
                         String docID = docIDs.get(scoreDoc.doc);
                         if (docID == null) {
@@ -571,6 +606,30 @@ public class PikesIR {
         builder.append(score.getMAP()).append(separator);
         builder.append(score.getMAP(10));
         return builder.toString();
+    }
+
+    private static <T> Map<String, T> parseMap(@Nullable final String string,
+            final Class<T> valueClass) {
+        final Map<String, T> map = Maps.newHashMap();
+        if (string != null) {
+            for (final String entry : string.split("[\\s;]+")) {
+                final int index = Math.max(entry.indexOf(':'), entry.indexOf('='));
+                if (index > 0) {
+                    final String key = entry.substring(0, index).trim();
+                    final String valueString = entry.substring(index + 1);
+                    Object value;
+                    if (valueClass.isAssignableFrom(Double.class)) {
+                        value = Double.valueOf(valueString);
+                    } else if (valueClass.isAssignableFrom(Integer.class)) {
+                        value = Integer.valueOf(valueString);
+                    } else {
+                        throw new Error(valueClass.getName());
+                    }
+                    map.put(key, valueClass.cast(value));
+                }
+            }
+        }
+        return map;
     }
 
     private static Map<String, Map<String, Double>> readRelevances(final Path path)
