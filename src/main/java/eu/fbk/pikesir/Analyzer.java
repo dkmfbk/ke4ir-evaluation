@@ -85,6 +85,10 @@ public abstract class Analyzer {
         return ConceptAnalyzer.INSTANCE;
     }
 
+    public static Analyzer createTaxonomicAnalyzer(final double alpha) {
+        return new TaxonomicAnalyzer(alpha);
+    }
+
     public static Analyzer create(final Path root, final Properties properties, String prefix) {
 
         // Normalize prefix, ensuring it ends with '.'
@@ -125,6 +129,13 @@ public abstract class Analyzer {
         // Add a concept analyzer, if enabled
         if (Boolean.parseBoolean(properties.getProperty(prefix + "concept", "false"))) {
             analyzers.add(createConceptAnalyzer());
+        }
+
+        // Add a taxonomic analyzer, if enabled
+        if (Boolean.parseBoolean(properties.getProperty(prefix + "taxonomic", "true"))) {
+            final double alpha = Double.parseDouble(properties.getProperty(prefix
+                    + "taxonomic.alpha", "0.5"));
+            analyzers.add(createTaxonomicAnalyzer(alpha));
         }
 
         // Combine the enrichers
@@ -599,6 +610,72 @@ public abstract class Analyzer {
                     builder.addTerm(Field.CONCEPT, name);
                 }
             }
+        }
+
+    }
+
+    private static final class TaxonomicAnalyzer extends Analyzer {
+
+        private static final URI ENTITY_CLASS = new URIImpl(
+                "http://dkm.fbk.eu/ontologies/knowledgestore#Entity");
+
+        private static final Set<String> TYPE_SET = ImmutableSet.of( //
+                "http://dbpedia.org/class/yago/");
+
+        private final double entityCoeff;
+
+        private final double typeCoeff;
+
+        TaxonomicAnalyzer(final double alpha) {
+            final double den = Math.sqrt(alpha * alpha + (1.0 - alpha) * (1.0 - alpha));
+            this.entityCoeff = alpha / den;
+            this.typeCoeff = (1.0 - alpha) / den;
+        }
+
+        @Override
+        public void analyze(final KAFDocument document, final QuadModel model,
+                final Builder builder, final boolean isQuery) {
+
+            for (final Resource entity : model.filter(null, RDF.TYPE, ENTITY_CLASS).subjects()) {
+                if (entity instanceof URI
+                        && ((URI) entity).getNamespace().equals("http://dbpedia.org/resource/")) {
+
+                    // Obtain entity types
+                    final List<URI> types = Lists.newArrayList();
+                    for (final Value type : model.filter(entity, RDF.TYPE, null).objects()) {
+                        if (type instanceof URI && TYPE_SET.contains(type)) {
+                            types.add((URI) type);
+                        }
+                    }
+
+                    // Compute type weights
+                    final double[] typeWeights = new double[types.size()];
+                    double den = 0.0;
+                    for (int i = 0; i < types.size(); ++i) {
+                        final double weight = entityTypeWeight((URI) entity, types.get(i));
+                        typeWeights[i] = this.typeCoeff * weight;
+                        den += weight * weight;
+                    }
+                    den = Math.sqrt(den);
+                    for (int i = 0; i < types.size(); ++i) {
+                        typeWeights[i] /= den;
+                    }
+
+                    // Add entity term
+                    builder.addTerm(Field.TAXONOMIC, "entity:" + ((URI) entity).getLocalName(),
+                            this.entityCoeff);
+
+                    // Add type terms
+                    for (int i = 0; i < types.size(); ++i) {
+                        builder.addTerm(Field.TAXONOMIC, "class:" + types.get(i).getLocalName(),
+                                typeWeights[i]);
+                    }
+                }
+            }
+        }
+
+        private double entityTypeWeight(final URI entity, final URI type) {
+            return 1.0;
         }
 
     }

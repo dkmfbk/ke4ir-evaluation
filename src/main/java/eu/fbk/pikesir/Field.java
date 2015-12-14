@@ -26,7 +26,9 @@ public enum Field {
 
     ROLE_NB("role.nb"),
 
-    CONCEPT("concept");
+    CONCEPT("concept"),
+
+    TAXONOMIC("taxonomic");
 
     private static Map<String, Field> idMap = null;
 
