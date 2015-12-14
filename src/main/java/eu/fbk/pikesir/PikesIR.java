@@ -718,7 +718,7 @@ public class PikesIR {
 
         if (LOGGER.isInfoEnabled()) {
             LOGGER.info("Evaluated {} - {} hits, best: {} {}", queryID,
-                    String.format("%4d", hits.size()), bestScore, bestLayers);
+                    String.format("%4d", hits.size()), bestScore, Joiner.on(',').join(bestLayers));
         }
     }
 
