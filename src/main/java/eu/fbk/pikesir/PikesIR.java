@@ -58,7 +58,6 @@ import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.NumericDocValues;
-import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.CollectionStatistics;
@@ -570,7 +569,7 @@ public class PikesIR {
         // Report top aggregate scores
         if (LOGGER.isInfoEnabled()) {
             final StringBuilder builder = new StringBuilder("Top scores:");
-            for (int i = 0; i < 10; ++i) {
+            for (int i = 0; i < Math.min(10, sortedScores.size()); ++i) {
                 final RankingScore score = sortedScores.get(i);
                 builder.append(String.format("\n  %-40s - p@1=%.3f p@3=%.3f p@5=%.3f p@10=%.3f "
                         + "mrr=%.3f ndcg=%.3f ndcg@10=%.3f map=%.3f map@10=%.3f", Joiner.on(',')
@@ -913,7 +912,10 @@ public class PikesIR {
 
         @Override
         public final long computeNorm(final FieldInvertState state) {
-            return encodeNormValue(1.0f); // modified
+            return 0L;
+            //    final int numTerms = state.getLength() - state.getNumOverlap();
+            //    final float norm = state.getBoost() * (float) (1.0 / Math.sqrt(numTerms));
+            //    return encodeNormValue(1.0f);
         }
 
         // default: 1.0 / Math.sqrt(sumOfSquaredWeights)
@@ -984,7 +986,7 @@ public class PikesIR {
         }
 
         private float sloppyFreq(final int distance) {
-            return 1.0f / (distance + 1);
+            return 1.0f / (distance + 1); // unused
         }
 
         private final class TFIDFSimScorer extends SimScorer {
@@ -1023,9 +1025,7 @@ public class PikesIR {
                 //    } catch (final IOException ex) {
                 //        Throwables.propagate(ex);
                 //    }
-
-                final float raw = tf(freq) * this.weightValue; // compute tf(f)*weight
-                return this.norms == null ? raw : raw * decodeNormValue(this.norms.get(doc)); // normalize for field
+                return tf(freq) * this.weightValue; // compute tf(f)*weight
             }
 
             @Override
