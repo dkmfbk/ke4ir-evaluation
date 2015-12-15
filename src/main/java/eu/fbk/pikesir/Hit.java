@@ -99,12 +99,18 @@ public final class Hit implements Serializable {
 
             @Override
             public int compare(final Hit left, final Hit right) {
+
                 int result;
                 if (layer == null) {
                     result = Double.compare(left.aggregateScore, right.aggregateScore);
                 } else {
                     result = Double.compare(left.getLayerScore(layer), right.getLayerScore(layer));
                 }
+
+                if (result == 0) {
+                    result = left.documentID.compareTo(right.documentID);
+                }
+
                 return higherFirst ? -result : result;
             }
 
