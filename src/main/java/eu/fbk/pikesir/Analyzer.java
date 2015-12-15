@@ -643,7 +643,7 @@ public abstract class Analyzer {
                     // Obtain entity types
                     final List<URI> types = Lists.newArrayList();
                     for (final Value type : model.filter(entity, RDF.TYPE, null).objects()) {
-                        if (type instanceof URI && TYPE_SET.contains(type)) {
+                        if (type instanceof URI && TYPE_SET.contains(((URI) type).getNamespace())) {
                             types.add((URI) type);
                         }
                     }
@@ -663,12 +663,12 @@ public abstract class Analyzer {
 
                     // Add entity term
                     builder.addTerm(Field.TAXONOMIC, "entity:" + ((URI) entity).getLocalName(),
-                            this.entityCoeff);
+                            10.0 * this.entityCoeff);
 
                     // Add type terms
                     for (int i = 0; i < types.size(); ++i) {
                         builder.addTerm(Field.TAXONOMIC, "class:" + types.get(i).getLocalName(),
-                                typeWeights[i]);
+                                10.0 * typeWeights[i]);
                     }
                 }
             }

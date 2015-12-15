@@ -36,7 +36,7 @@ public class SearchManager {
     try {
       this.indexId = indexId;
       this.analyzer = analyzer;
-      this.searcher = new IndexSearcher(DirectoryReader.open(FSDirectory.open(new File(this.indexesFolder + this.indexId))));
+      this.searcher = new IndexSearcher(DirectoryReader.open(FSDirectory.open(new File(this.indexesFolder + this.indexId).toPath())));
     } catch (Exception e) {
       e.printStackTrace();
     }

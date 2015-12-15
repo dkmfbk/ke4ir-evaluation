@@ -36,8 +36,8 @@ public class IndexManager {
    */
   public void createIndex(String indexId, PerFieldAnalyzerWrapper analyzer) {
     try {
-      this.indexDir = FSDirectory.open(new File(this.indexFolder + indexId));
-      this.config = new IndexWriterConfig(Version.LUCENE_4_10_3, analyzer);
+      this.indexDir = FSDirectory.open(new File(this.indexFolder + indexId).toPath());
+      this.config = new IndexWriterConfig(analyzer);
       this.indexWriter = new IndexWriter(this.indexDir, this.config);      
     } catch (IOException e) {
       e.printStackTrace();

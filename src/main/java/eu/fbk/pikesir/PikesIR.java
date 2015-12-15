@@ -46,6 +46,7 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field.Store;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FieldInvertState;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
@@ -56,8 +57,8 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.similarities.ClassicSimilarity;
 import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.util.Version;
 import org.openrdf.model.Statement;
 import org.openrdf.rio.RDFHandlerException;
 import org.slf4j.Logger;
@@ -420,13 +421,18 @@ public class PikesIR {
             vectors = TermVector.read(reader);
         }
 
-        final FSDirectory indexDir = FSDirectory.open(this.pathIndex.toFile());
-        final IndexWriterConfig config = new IndexWriterConfig(Version.LUCENE_4_10_3,
-                new KeywordAnalyzer());
+        // Lucene 4.10.3
+        //final FSDirectory indexDir = FSDirectory.open(this.pathIndex.toFile());
+        //final IndexWriterConfig config = new IndexWriterConfig(Version.LUCENE_4_10_3,
+        //        new KeywordAnalyzer());
+        final FSDirectory indexDir = FSDirectory.open(this.pathIndex);
+        final IndexWriterConfig config = new IndexWriterConfig(new KeywordAnalyzer());
+        config.setSimilarity(CustomSimilarity.INSTANCE);
 
         int numTerms = 0;
         try (IndexWriter writer = new IndexWriter(indexDir, config)) {
             for (final Map.Entry<String, TermVector> entry : vectors.entrySet()) {
+                LOGGER.debug("Indexing {} - {} terms", entry.getKey(), entry.getValue().size());
                 final Document doc = new Document();
                 doc.add(new TextField("id", entry.getKey(), Store.YES));
                 for (final Term term : entry.getValue().getTerms()) {
@@ -482,8 +488,9 @@ public class PikesIR {
         initDir(this.pathResults);
 
         // Open the index for read and evaluate all the queries in parallel
-        try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex.toFile()))) {
+        try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex))) {
             final IndexSearcher searcher = new IndexSearcher(reader);
+            searcher.setSimilarity(CustomSimilarity.INSTANCE);
             final List<Runnable> queryJobs = Lists.newArrayList();
             final Map<Integer, String> docIDs = Maps.newConcurrentMap();
             final Map<String, TermVector> docVectors = Maps.newConcurrentMap();
@@ -871,6 +878,25 @@ public class PikesIR {
             }
 
         });
+    }
+
+    private static final class CustomSimilarity extends ClassicSimilarity {
+
+        static final CustomSimilarity INSTANCE = new CustomSimilarity();
+
+        @Override
+        public float lengthNorm(final FieldInvertState state) {
+            System.out.println(state.getName() + ", " + state.getLength() + ", "
+                    + state.getOffset() + ", " + state.getPosition() + ", "
+                    + state.getMaxTermFrequency() + ", " + state.getNumOverlap() + ", "
+                    + state.getUniqueTermCount());
+            return super.lengthNorm(state);
+        }
+        //        @Override
+        //        public float coord(final int overlap, final int maxOverlap) {
+        //            return 1.0f;
+        //        }
+
     }
 
 }
