@@ -89,6 +89,10 @@ public abstract class Analyzer {
         return new TaxonomicAnalyzer(alpha);
     }
 
+    public static Analyzer createSemanticAnalyzer(final boolean expandQueries) {
+        return new SemanticAnalyzer(expandQueries);
+    }
+
     public static Analyzer create(final Path root, final Properties properties, String prefix) {
 
         // Normalize prefix, ensuring it ends with '.'
@@ -132,10 +136,17 @@ public abstract class Analyzer {
         }
 
         // Add a taxonomic analyzer, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "taxonomic", "true"))) {
+        if (Boolean.parseBoolean(properties.getProperty(prefix + "taxonomic", "false"))) {
             final double alpha = Double.parseDouble(properties.getProperty(prefix
                     + "taxonomic.alpha", "0.5"));
             analyzers.add(createTaxonomicAnalyzer(alpha));
+        }
+
+        // Add a semantic analyzer, if enabled
+        if (Boolean.parseBoolean(properties.getProperty(prefix + "semantic", "false"))) {
+            final boolean expandQueries = Boolean.parseBoolean(properties.getProperty(prefix
+                    + "semantic.expandqueries", "false"));
+            analyzers.add(createSemanticAnalyzer(expandQueries));
         }
 
         // Combine the enrichers
@@ -676,6 +687,115 @@ public abstract class Analyzer {
 
         private double entityTypeWeight(final URI entity, final URI type) {
             return 1.0;
+        }
+
+    }
+
+    private static final class SemanticAnalyzer extends Analyzer {
+
+        private static final URI ENTITY_CLASS = new URIImpl(
+                "http://dkm.fbk.eu/ontologies/knowledgestore#Entity");
+
+        private static final URI DENOTED_BY = new URIImpl(
+                "http://groundedannotationframework.org/gaf#denotedBy");
+
+        private static final Map<String, Field> TYPE_MAP = ImmutableMap.of( //
+                "http://dbpedia.org/class/yago/", Field.TYPE_YAGO, //
+                "http://www.ontologyportal.org/SUMO.owl#", Field.TYPE_SUMO, //
+                "http://framebase.org/ns/", Field.PREDICATE_FRB, //
+                "http://www.newsreader-project.eu/ontologies/propbank/", Field.PREDICATE_PB, //
+                "http://www.newsreader-project.eu/ontologies/nombank/", Field.PREDICATE_NB);
+
+        private static final Map<String, Field> ROLE_MAP = ImmutableMap.of( //
+                "http://framebase.org/ns/", Field.ROLE_FRB, //
+                "http://www.newsreader-project.eu/ontologies/propbank/", Field.ROLE_PB, //
+                "http://www.newsreader-project.eu/ontologies/nombank/", Field.ROLE_NB);
+
+        private final boolean expandQueries;
+
+        SemanticAnalyzer(final boolean expandQueries) {
+            this.expandQueries = expandQueries;
+        }
+
+        @Override
+        public void analyze(final KAFDocument document, final QuadModel model,
+                final Builder builder, final boolean isQuery) {
+
+            final Map<URI, List<URI>> parentMap = Maps.newHashMap();
+
+            for (final Resource entity : model.filter(null, RDF.TYPE, ENTITY_CLASS).subjects()) {
+
+                // Obtain number of mentions for current entity
+                final int numMentions = model.filter(entity, DENOTED_BY, null).size();
+
+                // Obtain types
+                final Set<URI> types = Sets.newHashSet();
+                for (final Value type : model.filter(entity, RDF.TYPE, null).objects()) {
+                    if (type instanceof URI && TYPE_MAP.containsKey(((URI) type).getNamespace())) {
+                        types.add((URI) type);
+                    }
+                }
+
+                // Obtain role properties
+                final Set<URI> roles = Sets.newHashSet();
+                for (final Statement stmt : model.filter(entity, null, null)) {
+                    if (ROLE_MAP.containsKey(stmt.getPredicate().getNamespace())) {
+                        roles.add(stmt.getPredicate());
+                    }
+                }
+
+                // Remove inherited types and roles, if necessary
+                if (isQuery && !this.expandQueries) {
+                    for (final URI type : ImmutableList.copyOf(types)) {
+                        List<URI> parentTypes = parentMap.get(type);
+                        if (parentTypes == null) {
+                            parentTypes = Lists.newArrayList();
+                            parentMap.put(type, parentTypes);
+                            for (final Value parentType : model
+                                    .filter(type, RDFS.SUBCLASSOF, null).objects()) {
+                                if (parentType instanceof URI && !parentType.equals(type)) {
+                                    parentTypes.add((URI) parentType);
+                                }
+                            }
+                        }
+                        types.removeAll(parentTypes);
+                    }
+                    for (final URI role : ImmutableList.copyOf(roles)) {
+                        List<URI> parentRoles = parentMap.get(role);
+                        if (parentRoles == null) {
+                            parentRoles = Lists.newArrayList();
+                            parentMap.put(role, parentRoles);
+                            for (final Value parentRole : model.filter(role, RDFS.SUBPROPERTYOF,
+                                    null).objects()) {
+                                if (parentRole instanceof URI && !parentRole.equals(role)) {
+                                    parentRoles.add((URI) parentRole);
+                                }
+                            }
+                        }
+                        roles.removeAll(parentRoles);
+                    }
+                }
+
+                // Emit entity term (if belonging to DBpedia)
+                if (entity instanceof URI) {
+                    final URI uri = (URI) entity;
+                    if (uri.getNamespace().equals("http://dbpedia.org/resource/")) {
+                        builder.addTerm(Field.URI, uri.getLocalName(), numMentions);
+                    }
+                }
+
+                // Emit type terms
+                for (final URI type : types) {
+                    final Field field = TYPE_MAP.get(type.getNamespace());
+                    builder.addTerm(field, type.getLocalName(), numMentions);
+                }
+
+                // Emit role terms
+                for (final URI role : roles) {
+                    final Field field = ROLE_MAP.get(role.getNamespace());
+                    builder.addTerm(field, role.getLocalName(), numMentions);
+                }
+            }
         }
 
     }
