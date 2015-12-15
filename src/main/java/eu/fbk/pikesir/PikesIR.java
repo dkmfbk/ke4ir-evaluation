@@ -676,11 +676,14 @@ public class PikesIR {
                         sortedDocVectors);
                 Collections.sort(sortedHits, Hit.comparator(null, true));
                 final List<String> ids = Lists.newArrayListWithCapacity(sortedHits.size());
+                final Map<String, Double> idsScores = Maps.newHashMap();
                 for (final Hit hit : sortedHits) {
                     ids.add(hit.getDocumentID());
+                    idsScores.put(hit.getDocumentID(), hit.getAggregateScore());
                 }
 
-                final RankingScore score = RankingScore.evaluator(10).add(ids, rels).get();
+                final RankingScore score = RankingScore.evaluator(10).add(ids, idsScores, rels)
+                        .get();
                 queryScores.put(queryID, score);
 
                 queryLines.put(score,

@@ -4,10 +4,14 @@ import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import javax.annotation.Nullable;
 
@@ -362,8 +366,21 @@ public class RankingScore implements Serializable {
             }
         }
 
-        private <T> void update(final Iterable<T> ranking, final Set<T> relItems,
-                @Nullable final Map<T, Double> rels) {
+        /**
+         * Internal method used to update the scores.
+         *
+         * @param ranking
+         *            the ranking returned by the system, not null
+         * @param scores
+         *            the scores computed by the system and used to build the ranking, possibly
+         *            null if this information is not available
+         * @param relItems
+         *            the set of gold relevant items, not null
+         * @param rels
+         *            the gold relevance scores, null if not available
+         */
+        private <T> void update(final Iterable<T> ranking, @Nullable final Map<T, Double> scores,
+                final Set<T> relItems, @Nullable final Map<T, Double> rels) {
 
             double[] relsSorted = null;
             if (rels != null) {
@@ -452,13 +469,21 @@ public class RankingScore implements Serializable {
         }
 
         public <T> Evaluator add(final Iterable<T> ranking, final Iterable<T> relItems) {
-            update(ranking, relItems instanceof Set<?> ? (Set<T>) relItems : //
+            update(ranking, null, relItems instanceof Set<?> ? (Set<T>) relItems : //
                     ImmutableSet.copyOf(relItems), null);
             return this;
         }
 
         public <T> Evaluator add(final Iterable<T> ranking, final Map<T, Double> rels) {
-            update(ranking, rels.keySet(), rels);
+            update(ranking, null, rels.keySet(), rels);
+            return this;
+        }
+
+        public <T> Evaluator add(Iterable<T> ranking, final Map<T, Double> scores,
+                final Map<T, Double> rels) {
+
+            // Delegate
+            update(ranking, scores, rels.keySet(), rels);
             return this;
         }
 
