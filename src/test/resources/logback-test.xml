@@ -22,7 +22,7 @@
 
     <logger
         name="eu.fbk.pikesir"
-        level="DEBUG" />
+        level="INFO" />
 
     <logger
         name="status"

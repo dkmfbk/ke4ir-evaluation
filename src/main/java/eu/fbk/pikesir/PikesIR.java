@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -40,8 +41,12 @@ import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
 import com.google.common.primitives.Doubles;
+import com.google.common.primitives.Ints;
 
-import org.apache.lucene.analysis.core.KeywordAnalyzer;
+import org.apache.lucene.analysis.Tokenizer;
+import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
+import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
+import org.apache.lucene.analysis.tokenattributes.PayloadAttribute;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field.Store;
 import org.apache.lucene.document.TextField;
@@ -51,14 +56,22 @@ import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.index.LeafReaderContext;
+import org.apache.lucene.index.NumericDocValues;
+import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
+import org.apache.lucene.search.CollectionStatistics;
+import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TermStatistics;
 import org.apache.lucene.search.TopDocs;
-import org.apache.lucene.search.similarities.ClassicSimilarity;
+import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.SmallFloat;
 import org.openrdf.model.Statement;
 import org.openrdf.rio.RDFHandlerException;
 import org.slf4j.Logger;
@@ -426,18 +439,19 @@ public class PikesIR {
         //final IndexWriterConfig config = new IndexWriterConfig(Version.LUCENE_4_10_3,
         //        new KeywordAnalyzer());
         final FSDirectory indexDir = FSDirectory.open(this.pathIndex);
-        final IndexWriterConfig config = new IndexWriterConfig(new KeywordAnalyzer());
+        final IndexWriterConfig config = new IndexWriterConfig(new CustomAnalyzer());
         config.setSimilarity(CustomSimilarity.INSTANCE);
 
         int numTerms = 0;
         try (IndexWriter writer = new IndexWriter(indexDir, config)) {
             for (final Map.Entry<String, TermVector> entry : vectors.entrySet()) {
-                LOGGER.debug("Indexing {} - {} terms", entry.getKey(), entry.getValue().size());
+                LOGGER.info("Indexing {} - {} terms", entry.getKey(), entry.getValue().size());
                 final Document doc = new Document();
                 doc.add(new TextField("id", entry.getKey(), Store.YES));
                 for (final Term term : entry.getValue().getTerms()) {
                     final String fieldID = term.getField().getID();
-                    final String fieldValue = term.getValue();
+                    final String fieldValue = "|" + term.getWeight() + "| " + term.getValue();
+                    // final String fieldValue = term.getValue();
                     if (this.weightedFields.contains(term.getField())) {
                         for (int i = 0; i < (int) Math.ceil(term.getWeight()); ++i) {
                             doc.add(new TextField(fieldID, fieldValue, Store.YES));
@@ -607,7 +621,7 @@ public class PikesIR {
             // If query is non-empty, mark the layer as available and perform the query
             if (!queryString.isEmpty()) {
                 availableLayers.add(layer);
-                final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
+                final QueryParser parser = new QueryParser("default-field", new CustomAnalyzer());
                 final Query query = parser.parse(queryString);
                 final TopDocs results = searcher.search(query, 1000);
                 LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length,
@@ -880,22 +894,335 @@ public class PikesIR {
         });
     }
 
-    private static final class CustomSimilarity extends ClassicSimilarity {
+    private static final class CustomSimilarity extends Similarity {
 
         static final CustomSimilarity INSTANCE = new CustomSimilarity();
 
-        @Override
-        public float lengthNorm(final FieldInvertState state) {
-            System.out.println(state.getName() + ", " + state.getLength() + ", "
-                    + state.getOffset() + ", " + state.getPosition() + ", "
-                    + state.getMaxTermFrequency() + ", " + state.getNumOverlap() + ", "
-                    + state.getUniqueTermCount());
-            return super.lengthNorm(state);
+        private static final float[] NORM_TABLE = new float[256];
+
+        static {
+            for (int i = 0; i < 256; i++) {
+                NORM_TABLE[i] = SmallFloat.byte315ToFloat((byte) i);
+            }
         }
-        //        @Override
-        //        public float coord(final int overlap, final int maxOverlap) {
-        //            return 1.0f;
-        //        }
+
+        @Override
+        public float coord(final int overlap, final int maxOverlap) {
+            return 1.0f; // modified
+        }
+
+        @Override
+        public final long computeNorm(final FieldInvertState state) {
+            return encodeNormValue(1.0f); // modified
+        }
+
+        // default: 1.0 / Math.sqrt(sumOfSquaredWeights)
+        @Override
+        public float queryNorm(final float sumOfSquaredWeights) {
+            return (float) (1.0 / Math.sqrt(sumOfSquaredWeights));
+        }
+
+        @Override
+        public final SimWeight computeWeight(final CollectionStatistics collectionStats,
+                final TermStatistics... termStats) {
+
+            final Explanation idf = termStats.length == 1 ? idfExplain(collectionStats,
+                    termStats[0]) : idfExplain(collectionStats, termStats);
+
+            final List<String> tokens = Lists.newArrayListWithCapacity(termStats.length);
+            for (int i = 0; i < termStats.length; ++i) {
+                tokens.add(termStats[0].term().utf8ToString());
+            }
+
+            return new IDFStats(collectionStats.field(), tokens, idf);
+        }
+
+        @Override
+        public final SimScorer simScorer(final SimWeight stats, final LeafReaderContext context)
+                throws IOException {
+            final IDFStats idfstats = (IDFStats) stats;
+            return new TFIDFSimScorer(idfstats, context);
+        }
+
+        private float tf(final float freq) {
+            return (float) Math.sqrt(freq);
+        }
+
+        private Explanation idfExplain(final CollectionStatistics collectionStats,
+                final TermStatistics termStats) {
+            final long df = termStats.docFreq();
+            final long max = collectionStats.maxDoc();
+            final float idf = idf(df, max);
+            return Explanation.match(idf, "idf(docFreq=" + df + ", maxDocs=" + max + ")");
+        }
+
+        private Explanation idfExplain(final CollectionStatistics collectionStats,
+                final TermStatistics termStats[]) {
+            final long max = collectionStats.maxDoc();
+            float idf = 0.0f;
+            final List<Explanation> subs = new ArrayList<>();
+            for (final TermStatistics stat : termStats) {
+                final long df = stat.docFreq();
+                final float termIdf = idf(df, max);
+                subs.add(Explanation
+                        .match(termIdf, "idf(docFreq=" + df + ", maxDocs=" + max + ")"));
+                idf += termIdf;
+            }
+            return Explanation.match(idf, "idf(), sum of:", subs);
+        }
+
+        private float idf(final long docFreq, final long numDocs) {
+            return (float) (Math.log(numDocs / (double) (docFreq + 1)) + 1.0);
+        }
+
+        private final float decodeNormValue(final long norm) {
+            return NORM_TABLE[(int) (norm & 0xFF)]; // & 0xFF maps negative bytes to positive above 127
+        }
+
+        private final long encodeNormValue(final float f) {
+            return SmallFloat.floatToByte315(f);
+        }
+
+        private float sloppyFreq(final int distance) {
+            return 1.0f / (distance + 1);
+        }
+
+        private final class TFIDFSimScorer extends SimScorer {
+
+            private final LeafReaderContext context;
+
+            private final IDFStats stats;
+
+            private final float weightValue;
+
+            private final NumericDocValues norms;
+
+            TFIDFSimScorer(final IDFStats stats, final LeafReaderContext context)
+                    throws IOException {
+                this.context = context;
+                this.stats = stats;
+                this.weightValue = stats.value;
+                this.norms = this.context.reader().getNormValues(stats.field);
+            }
+
+            @Override
+            public float score(final int doc, final float freq) {
+
+                // UNCOMMENT HERE TO OBTAIN WEIGHTS FROM INDEXED PAYLOADS
+                //    float weight = 1.0f;
+                //    try {
+                //        final PostingsEnum pe = this.context.reader().postings(
+                //                new org.apache.lucene.index.Term(this.stats.field,
+                //                        this.stats.tokens.get(0)), PostingsEnum.PAYLOADS);
+                //        pe.advance(doc);
+                //        pe.nextPosition();
+                //        final BytesRef payload = pe.getPayload();
+                //        if (payload != null) {
+                //            weight = Float.intBitsToFloat(Ints.fromByteArray(payload.bytes));
+                //        }
+                //    } catch (final IOException ex) {
+                //        Throwables.propagate(ex);
+                //    }
+
+                final float raw = tf(freq) * this.weightValue; // compute tf(f)*weight
+                return this.norms == null ? raw : raw * decodeNormValue(this.norms.get(doc)); // normalize for field
+            }
+
+            @Override
+            public float computeSlopFactor(final int distance) {
+                return sloppyFreq(distance);
+            }
+
+            @Override
+            public float computePayloadFactor(final int doc, final int start, final int end,
+                    final BytesRef payload) {
+                return 1.0f; // never called (!)
+            }
+
+            @Override
+            public Explanation explain(final int doc, final Explanation freq) {
+                return explainScore(doc, freq, this.stats, this.norms);
+            }
+
+        }
+
+        private static class IDFStats extends SimWeight {
+
+            final String field;
+
+            final List<String> tokens;
+
+            final Explanation idf;
+
+            float queryNorm;
+
+            float boost;
+
+            float queryWeight;
+
+            float value;
+
+            public IDFStats(final String field, final List<String> tokens, final Explanation idf) {
+                this.field = field;
+                this.tokens = tokens;
+                this.idf = idf;
+                normalize(1f, 1f);
+            }
+
+            @Override
+            public float getValueForNormalization() {
+                return this.queryWeight * this.queryWeight; // sum of squared weights
+            }
+
+            @Override
+            public void normalize(final float queryNorm, final float boost) {
+                this.boost = boost;
+                this.queryNorm = queryNorm;
+                this.queryWeight = queryNorm * boost * this.idf.getValue();
+                this.value = this.queryWeight * this.idf.getValue();
+            }
+
+        }
+
+        private Explanation explainQuery(final IDFStats stats) {
+            final List<Explanation> subs = new ArrayList<>();
+
+            final Explanation boostExpl = Explanation.match(stats.boost, "boost");
+            if (stats.boost != 1.0f) {
+                subs.add(boostExpl);
+            }
+            subs.add(stats.idf);
+
+            final Explanation queryNormExpl = Explanation.match(stats.queryNorm, "queryNorm");
+            subs.add(queryNormExpl);
+
+            return Explanation.match(
+                    boostExpl.getValue() * stats.idf.getValue() * queryNormExpl.getValue(),
+                    "queryWeight, product of:", subs);
+        }
+
+        private Explanation explainField(final int doc, final Explanation freq,
+                final IDFStats stats, final NumericDocValues norms) {
+            final Explanation tfExplanation = Explanation.match(tf(freq.getValue()), "tf(freq="
+                    + freq.getValue() + "), with freq of:", freq);
+            final Explanation fieldNormExpl = Explanation.match(
+                    norms != null ? decodeNormValue(norms.get(doc)) : 1.0f, "fieldNorm(doc=" + doc
+                            + ")");
+
+            return Explanation.match(tfExplanation.getValue() * stats.idf.getValue()
+                    * fieldNormExpl.getValue(), "fieldWeight in " + doc + ", product of:",
+                    tfExplanation, stats.idf, fieldNormExpl);
+        }
+
+        private Explanation explainScore(final int doc, final Explanation freq,
+                final IDFStats stats, final NumericDocValues norms) {
+            final Explanation queryExpl = explainQuery(stats);
+            final Explanation fieldExpl = explainField(doc, freq, stats, norms);
+            if (queryExpl.getValue() == 1f) {
+                return fieldExpl;
+            }
+            return Explanation.match(queryExpl.getValue() * fieldExpl.getValue(), "score(doc="
+                    + doc + ",freq=" + freq.getValue() + "), product of:", queryExpl, fieldExpl);
+        }
+
+    }
+
+    private static final class CustomAnalyzer extends org.apache.lucene.analysis.Analyzer {
+
+        @Override
+        protected TokenStreamComponents createComponents(final String fieldName) {
+            return new TokenStreamComponents(new CustomTokenizer());
+        }
+
+    }
+
+    private static final class CustomTokenizer extends Tokenizer {
+
+        private final CharTermAttribute termAtt;
+
+        private final OffsetAttribute offsetAtt;
+
+        private final PayloadAttribute payloadAtt;
+
+        private final char[] weightBuffer;
+
+        private int finalOffset;
+
+        private boolean done;
+
+        public CustomTokenizer() {
+            this.termAtt = addAttribute(CharTermAttribute.class);
+            this.offsetAtt = addAttribute(OffsetAttribute.class);
+            this.payloadAtt = addAttribute(PayloadAttribute.class);
+            this.weightBuffer = new char[32];
+            this.finalOffset = 0;
+            this.done = false;
+            this.termAtt.resizeBuffer(256);
+        }
+
+        @Override
+        public final boolean incrementToken() throws IOException {
+            if (!this.done) {
+                clearAttributes();
+                this.done = true;
+                int upto = 0;
+                char[] buffer = this.termAtt.buffer();
+
+                float weight = 1.0f;
+                int weightLen = 0;
+                while (true) {
+                    final int c = this.input.read();
+                    if (c >= 0) {
+                        this.weightBuffer[weightLen++] = (char) c;
+                    }
+                    if (c == ' ' && weightLen >= 3 && this.weightBuffer[weightLen - 2] == '|') {
+                        weight = Float.parseFloat(new String(this.weightBuffer, 1, weightLen - 3));
+                        break;
+                    } else if (c < 0 || c != '|' && weightLen == 1 || c != '|' && c != '.'
+                            && c != ' ' && !Character.isDigit(c)) {
+                        System.arraycopy(this.weightBuffer, 0, buffer, 0, weightLen);
+                        upto = weightLen;
+                        break;
+                    }
+                }
+
+                while (true) {
+                    final int length = this.input.read(buffer, upto, buffer.length - upto);
+                    if (length == -1) {
+                        break;
+                    }
+                    upto += length;
+                    if (upto == buffer.length) {
+                        buffer = this.termAtt.resizeBuffer(1 + buffer.length);
+                    }
+                }
+
+                this.termAtt.setLength(upto);
+                this.finalOffset = correctOffset(upto);
+                this.offsetAtt.setOffset(correctOffset(0), this.finalOffset);
+
+                if (weight != 1.0f) {
+                    final BytesRef payload = new BytesRef(Ints.toByteArray(Float
+                            .floatToIntBits(weight)), 0, 4);
+                    this.payloadAtt.setPayload(payload);
+                }
+
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        public final void end() throws IOException {
+            super.end();
+            this.offsetAtt.setOffset(this.finalOffset, this.finalOffset);
+        }
+
+        @Override
+        public void reset() throws IOException {
+            super.reset();
+            this.done = false;
+        }
 
     }
 
