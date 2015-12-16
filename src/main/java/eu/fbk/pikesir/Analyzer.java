@@ -630,6 +630,9 @@ public abstract class Analyzer {
         private static final URI ENTITY_CLASS = new URIImpl(
                 "http://dkm.fbk.eu/ontologies/knowledgestore#Entity");
 
+        private static final URI DENOTED_BY = new URIImpl(
+                "http://groundedannotationframework.org/gaf#denotedBy");
+
         private static final Set<String> TYPE_SET = ImmutableSet.of( //
                 "http://dbpedia.org/class/yago/");
 
@@ -647,9 +650,24 @@ public abstract class Analyzer {
         public void analyze(final KAFDocument document, final QuadModel model,
                 final Builder builder, final boolean isQuery) {
 
+            final List<Resource> entities = ImmutableList.copyOf(model.filter(null, RDF.TYPE,
+                    ENTITY_CLASS).subjects());
+
+            double factor = 0.0;
+            final Map<Resource, Integer> mentionCounts = Maps.newHashMap();
+            for (final Resource entity : entities) {
+                final int mentionCount = model.filter(entity, DENOTED_BY, null).size();
+                mentionCounts.put(entity, mentionCount);
+                factor += mentionCount * mentionCount;
+            }
+            factor = 1.0 / Math.sqrt(factor);
+
             for (final Resource entity : model.filter(null, RDF.TYPE, ENTITY_CLASS).subjects()) {
                 if (entity instanceof URI
                         && ((URI) entity).getNamespace().equals("http://dbpedia.org/resource/")) {
+
+                    // Obtain number of mentions for current entity
+                    final int mentionCount = mentionCounts.get(entity);
 
                     // Obtain entity types
                     final List<URI> types = Lists.newArrayList();
@@ -674,12 +692,12 @@ public abstract class Analyzer {
 
                     // Add entity term
                     builder.addTerm(Field.TAXONOMIC, "entity:" + ((URI) entity).getLocalName(),
-                            10.0 * this.entityCoeff);
+                            this.entityCoeff * mentionCount * factor);
 
                     // Add type terms
                     for (int i = 0; i < types.size(); ++i) {
                         builder.addTerm(Field.TAXONOMIC, "class:" + types.get(i).getLocalName(),
-                                10.0 * typeWeights[i]);
+                                typeWeights[i] * mentionCount * factor);
                     }
                 }
             }
