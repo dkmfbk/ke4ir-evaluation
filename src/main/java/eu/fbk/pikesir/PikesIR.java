@@ -41,12 +41,7 @@ import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
 import com.google.common.primitives.Doubles;
-import com.google.common.primitives.Ints;
 
-import org.apache.lucene.analysis.Tokenizer;
-import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
-import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
-import org.apache.lucene.analysis.tokenattributes.PayloadAttribute;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field.Store;
 import org.apache.lucene.document.TextField;
@@ -78,6 +73,7 @@ import org.slf4j.LoggerFactory;
 
 import ixa.kaflib.KAFDocument;
 
+import eu.fbk.pikesir.lucene.WeightAnalyzer;
 import eu.fbk.pikesir.util.CommandLine;
 import eu.fbk.pikesir.util.Util;
 import eu.fbk.rdfpro.AbstractRDFHandlerWrapper;
@@ -141,6 +137,8 @@ public class PikesIR {
     private final Analyzer analyzer;
 
     private final Aggregator aggregator;
+
+    private final Similarity similarity;
 
     public static void main(final String... args) {
 
@@ -263,7 +261,9 @@ public class PikesIR {
         this.weightedFields = Sets.newEnumSet(ImmutableSet.of(), Field.class);
         for (final String fieldSpec : properties.getProperty(pr + "index.weightedfields", "")
                 .split("[\\s,;]+")) {
-            this.weightedFields.add(Field.forID(fieldSpec.trim()));
+            if (!fieldSpec.trim().isEmpty()) {
+                this.weightedFields.add(Field.forID(fieldSpec.trim()));
+            }
         }
 
         // Retrieve layers and associated fields
@@ -313,11 +313,15 @@ public class PikesIR {
         // Build the aggregator
         this.aggregator = Aggregator.create(root, properties, "pikesir.aggregator.");
 
+        // Build the similarity
+        this.similarity = Similarities.create(root, properties, "pikesir.similarity");
+
         // Report configuration
         LOGGER.info("Focus on layer combinations: " + Joiner.on(' ').join(this.layerFocus));
         LOGGER.info("Using enricher: {}", this.enricher);
         LOGGER.info("Using analyzer: {}", this.analyzer);
         LOGGER.info("Using aggregator: {}", this.aggregator);
+        LOGGER.info("Using similarity: {}", this.similarity);
     }
 
     public void enrichDocs() throws IOException {
@@ -351,8 +355,8 @@ public class PikesIR {
                 writeTriples(outputPath, model);
                 inTriples.addAndGet(sizeBefore);
                 outTriples.addAndGet(model.size());
-                LOGGER.info("Enriched {} - {} triples obtained from {} triples", path, sizeBefore,
-                        model.size());
+                LOGGER.info("Enriched {} - {} triples obtained from {} triples", path,
+                        model.size(), sizeBefore);
             } catch (final Throwable ex) {
                 Throwables.propagate(ex);
             }
@@ -438,28 +442,39 @@ public class PikesIR {
         //final IndexWriterConfig config = new IndexWriterConfig(Version.LUCENE_4_10_3,
         //        new KeywordAnalyzer());
         final FSDirectory indexDir = FSDirectory.open(this.pathIndex);
-        final IndexWriterConfig config = new IndexWriterConfig(new CustomAnalyzer());
-        config.setSimilarity(CustomSimilarity.INSTANCE);
+        final IndexWriterConfig config = new IndexWriterConfig(new WeightAnalyzer());
+        config.setSimilarity(this.similarity);
 
         int numTerms = 0;
         try (IndexWriter writer = new IndexWriter(indexDir, config)) {
             for (final Map.Entry<String, TermVector> entry : vectors.entrySet()) {
-                LOGGER.info("Indexing {} - {} terms", entry.getKey(), entry.getValue().size());
+
+                final String docID = entry.getKey();
+                final TermVector docVector = entry.getValue();
+
+                LOGGER.info("Indexing {} - {} terms", docID, entry.getValue().size());
+
                 final Document doc = new Document();
-                doc.add(new TextField("id", entry.getKey(), Store.YES));
-                for (final Term term : entry.getValue().getTerms()) {
-                    final String fieldID = term.getField().getID();
-                    final String fieldValue = "|" + term.getWeight() + "| " + term.getValue();
-                    // final String fieldValue = term.getValue();
-                    if (this.weightedFields.contains(term.getField())) {
-                        for (int i = 0; i < (int) Math.ceil(term.getWeight()); ++i) {
+                final Map<String, Double> norms = Maps.newHashMap();
+                doc.add(new TextField("id", docID, Store.YES));
+                for (final Field field : Field.values()) {
+                    final String fieldID = field.getID();
+                    double squaredWeightSum = 0.0;
+                    for (final Term term : docVector.getTerms(field)) {
+                        squaredWeightSum += term.getWeight(); // * term.getWeight();
+                        final String fieldValue = "|" + term.getWeight() + "| " + term.getValue();
+                        if (this.weightedFields.contains(term.getField())) {
+                            for (int i = 0; i < (int) Math.ceil(term.getWeight()); ++i) {
+                                doc.add(new TextField(fieldID, fieldValue, Store.YES));
+                            }
+                        } else {
                             doc.add(new TextField(fieldID, fieldValue, Store.YES));
                         }
-                    } else {
-                        doc.add(new TextField(fieldID, fieldValue, Store.YES));
+                        ++numTerms;
                     }
-                    ++numTerms;
+                    norms.put(field.getID(), 1.0 / Math.sqrt(squaredWeightSum));
                 }
+                Similarities.setDocNorms(norms);
                 writer.addDocument(doc);
             }
         }
@@ -503,7 +518,7 @@ public class PikesIR {
         // Open the index for read and evaluate all the queries in parallel
         try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex))) {
             final IndexSearcher searcher = new IndexSearcher(reader);
-            searcher.setSimilarity(CustomSimilarity.INSTANCE);
+            searcher.setSimilarity(this.similarity);
             final List<Runnable> queryJobs = Lists.newArrayList();
             final Map<Integer, String> docIDs = Maps.newConcurrentMap();
             final Map<String, TermVector> docVectors = Maps.newConcurrentMap();
@@ -620,7 +635,8 @@ public class PikesIR {
             // If query is non-empty, mark the layer as available and perform the query
             if (!queryString.isEmpty()) {
                 availableLayers.add(layer);
-                final QueryParser parser = new QueryParser("default-field", new CustomAnalyzer());
+                Similarities.setQueryTerms(queryVector);
+                final QueryParser parser = new QueryParser("default-field", new WeightAnalyzer());
                 final Query query = parser.parse(queryString);
                 final TopDocs results = searcher.search(query, 1000);
                 LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length,
@@ -915,7 +931,7 @@ public class PikesIR {
 
         @Override
         public final long computeNorm(final FieldInvertState state) {
-            return 0L;
+            return 1L;
             //    final int numTerms = state.getLength() - state.getNumOverlap();
             //    final float norm = state.getBoost() * (float) (1.0 / Math.sqrt(numTerms));
             //    return encodeNormValue(1.0f);
@@ -1126,105 +1142,6 @@ public class PikesIR {
             }
             return Explanation.match(queryExpl.getValue() * fieldExpl.getValue(), "score(doc="
                     + doc + ",freq=" + freq.getValue() + "), product of:", queryExpl, fieldExpl);
-        }
-
-    }
-
-    private static final class CustomAnalyzer extends org.apache.lucene.analysis.Analyzer {
-
-        @Override
-        protected TokenStreamComponents createComponents(final String fieldName) {
-            return new TokenStreamComponents(new CustomTokenizer());
-        }
-
-    }
-
-    private static final class CustomTokenizer extends Tokenizer {
-
-        private final CharTermAttribute termAtt;
-
-        private final OffsetAttribute offsetAtt;
-
-        private final PayloadAttribute payloadAtt;
-
-        private final char[] weightBuffer;
-
-        private int finalOffset;
-
-        private boolean done;
-
-        public CustomTokenizer() {
-            this.termAtt = addAttribute(CharTermAttribute.class);
-            this.offsetAtt = addAttribute(OffsetAttribute.class);
-            this.payloadAtt = addAttribute(PayloadAttribute.class);
-            this.weightBuffer = new char[32];
-            this.finalOffset = 0;
-            this.done = false;
-            this.termAtt.resizeBuffer(256);
-        }
-
-        @Override
-        public final boolean incrementToken() throws IOException {
-            if (!this.done) {
-                clearAttributes();
-                this.done = true;
-                int upto = 0;
-                char[] buffer = this.termAtt.buffer();
-
-                float weight = 1.0f;
-                int weightLen = 0;
-                while (true) {
-                    final int c = this.input.read();
-                    if (c >= 0) {
-                        this.weightBuffer[weightLen++] = (char) c;
-                    }
-                    if (c == ' ' && weightLen >= 3 && this.weightBuffer[weightLen - 2] == '|') {
-                        weight = Float.parseFloat(new String(this.weightBuffer, 1, weightLen - 3));
-                        break;
-                    } else if (c < 0 || c != '|' && weightLen == 1 || c != '|' && c != '.'
-                            && c != ' ' && !Character.isDigit(c)) {
-                        System.arraycopy(this.weightBuffer, 0, buffer, 0, weightLen);
-                        upto = weightLen;
-                        break;
-                    }
-                }
-
-                while (true) {
-                    final int length = this.input.read(buffer, upto, buffer.length - upto);
-                    if (length == -1) {
-                        break;
-                    }
-                    upto += length;
-                    if (upto == buffer.length) {
-                        buffer = this.termAtt.resizeBuffer(1 + buffer.length);
-                    }
-                }
-
-                this.termAtt.setLength(upto);
-                this.finalOffset = correctOffset(upto);
-                this.offsetAtt.setOffset(correctOffset(0), this.finalOffset);
-
-                if (weight != 1.0f) {
-                    final BytesRef payload = new BytesRef(Ints.toByteArray(Float
-                            .floatToIntBits(weight)), 0, 4);
-                    this.payloadAtt.setPayload(payload);
-                }
-
-                return true;
-            }
-            return false;
-        }
-
-        @Override
-        public final void end() throws IOException {
-            super.end();
-            this.offsetAtt.setOffset(this.finalOffset, this.finalOffset);
-        }
-
-        @Override
-        public void reset() throws IOException {
-            super.reset();
-            this.done = false;
         }
 
     }

@@ -4,14 +4,10 @@ import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import javax.annotation.Nullable;
 
@@ -479,7 +475,7 @@ public class RankingScore implements Serializable {
             return this;
         }
 
-        public <T> Evaluator add(Iterable<T> ranking, final Map<T, Double> scores,
+        public <T> Evaluator add(final Iterable<T> ranking, final Map<T, Double> scores,
                 final Map<T, Double> rels) {
 
             // Delegate
