@@ -12,7 +12,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -46,26 +45,18 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field.Store;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
-import org.apache.lucene.index.FieldInvertState;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
-import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
-import org.apache.lucene.search.CollectionStatistics;
-import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
-import org.apache.lucene.search.TermStatistics;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.SmallFloat;
 import org.openrdf.model.Statement;
 import org.openrdf.rio.RDFHandlerException;
 import org.slf4j.Logger;
@@ -198,32 +189,57 @@ public class PikesIR {
             index |= Boolean.parseBoolean(properties.getProperty(pr + "index", "false"));
             search |= Boolean.parseBoolean(properties.getProperty(pr + "search", "false"));
 
-            // Initialize the PikesIR main object
-            final PikesIR pikesIR = new PikesIR(propertiesPath.getParent(), properties, "pikesir.");
+            mainHelper(propertiesPath.getParent(), properties, enrichQueries, enrichDocs,
+                    analyzeQueries, analyzeDocs, index, search);
 
-            // Perform the requested operations
-            if (enrichQueries) {
-                pikesIR.enrichQueries();
-            }
-            if (enrichDocs) {
-                pikesIR.enrichDocs();
-            }
-            if (analyzeQueries) {
-                pikesIR.analyzeQueries();
-            }
-            if (analyzeDocs) {
-                pikesIR.analyzeDocs();
-            }
-            if (index) {
-                pikesIR.index();
-            }
-            if (search) {
-                pikesIR.search();
-            }
+            //            final List<String> data = Lists.newArrayList();
+            //            for (int j = 0; j <= 100; ++j) {
+            //                final double textWeight = j * 0.01;
+            //                System.out.println("\n\n\n**** " + textWeight + " ****\n\n");
+            //                properties.setProperty("pikesir.aggregator.balanced.textweight", "" + textWeight);
+            //                mainHelper(propertiesPath.getParent(), properties, enrichQueries, enrichDocs,
+            //                        analyzeQueries, analyzeDocs, index, search);
+            //                final List<String> lines = Files.readAllLines(propertiesPath.getParent().resolve(
+            //                        "results/aggregates.csv"));
+            //                for (int i = 1; i < lines.size(); ++i) {
+            //                    data.add(String.format("%.2f", textWeight) + ";" + lines.get(i));
+            //                }
+            //            }
+            //            Files.write(propertiesPath.getParent().resolve("results/experiment.csv"), data,
+            //                    Charsets.UTF_8);
 
         } catch (final Throwable ex) {
             // Display error information and terminate
             CommandLine.fail(ex);
+        }
+    }
+
+    private static void mainHelper(final Path root, final Properties properties,
+            final boolean enrichQueries, final boolean enrichDocs, final boolean analyzeQueries,
+            final boolean analyzeDocs, final boolean index, final boolean search)
+            throws IOException {
+
+        // Initialize the PikesIR main object
+        final PikesIR pikesIR = new PikesIR(root, properties, "pikesir.");
+
+        // Perform the requested operations
+        if (enrichQueries) {
+            pikesIR.enrichQueries();
+        }
+        if (enrichDocs) {
+            pikesIR.enrichDocs();
+        }
+        if (analyzeQueries) {
+            pikesIR.analyzeQueries();
+        }
+        if (analyzeDocs) {
+            pikesIR.analyzeDocs();
+        }
+        if (index) {
+            pikesIR.index();
+        }
+        if (search) {
+            pikesIR.search();
         }
     }
 
@@ -584,7 +600,7 @@ public class PikesIR {
         // Report top aggregate scores
         if (LOGGER.isInfoEnabled()) {
             final StringBuilder builder = new StringBuilder("Top scores:");
-            for (int i = 0; i < Math.min(10, sortedScores.size()); ++i) {
+            for (int i = 0; i < Math.min(100, sortedScores.size()); ++i) {
                 final RankingScore score = sortedScores.get(i);
                 builder.append(String.format("\n  %-40s - p@1=%.3f p@3=%.3f p@5=%.3f p@10=%.3f "
                         + "mrr=%.3f ndcg=%.3f ndcg@10=%.3f map=%.3f map@10=%.3f", Joiner.on(',')
@@ -623,8 +639,20 @@ public class PikesIR {
                         builder.append(separator);
                         builder.append(field.getID()).append(":\"").append(term.getValue())
                                 .append("\"");
-                        if (boost != 1.0) {
-                            builder.append("^").append(boost);
+                        final double actualBoost = boost * term.getWeight();
+
+                        //                        if (layer.equals("all")) {
+                        //                            if (term.getField() == Field.STEM) {
+                        //                                actualBoost *= .5;
+                        //                            } else {
+                        //                                actualBoost *= .125;
+                        //                            }
+                        //                        }
+
+                        if (actualBoost != 1.0) {
+                            //                            System.err.println(field.getID() + " - " + term.getValue() + " - "
+                            //                                    + actualBoost);
+                            builder.append("^").append(actualBoost);
                         }
                         separator = " OR ";
                     }
@@ -910,240 +938,6 @@ public class PikesIR {
             }
 
         });
-    }
-
-    private static final class CustomSimilarity extends Similarity {
-
-        static final CustomSimilarity INSTANCE = new CustomSimilarity();
-
-        private static final float[] NORM_TABLE = new float[256];
-
-        static {
-            for (int i = 0; i < 256; i++) {
-                NORM_TABLE[i] = SmallFloat.byte315ToFloat((byte) i);
-            }
-        }
-
-        @Override
-        public float coord(final int overlap, final int maxOverlap) {
-            return 1.0f; // modified
-        }
-
-        @Override
-        public final long computeNorm(final FieldInvertState state) {
-            return 1L;
-            //    final int numTerms = state.getLength() - state.getNumOverlap();
-            //    final float norm = state.getBoost() * (float) (1.0 / Math.sqrt(numTerms));
-            //    return encodeNormValue(1.0f);
-        }
-
-        // default: 1.0 / Math.sqrt(sumOfSquaredWeights)
-        @Override
-        public float queryNorm(final float sumOfSquaredWeights) {
-            return (float) (1.0 / Math.sqrt(sumOfSquaredWeights));
-        }
-
-        @Override
-        public final SimWeight computeWeight(final CollectionStatistics collectionStats,
-                final TermStatistics... termStats) {
-
-            final Explanation idf = termStats.length == 1 ? idfExplain(collectionStats,
-                    termStats[0]) : idfExplain(collectionStats, termStats);
-
-            final List<String> tokens = Lists.newArrayListWithCapacity(termStats.length);
-            for (int i = 0; i < termStats.length; ++i) {
-                tokens.add(termStats[0].term().utf8ToString());
-            }
-
-            return new IDFStats(collectionStats.field(), tokens, idf);
-        }
-
-        @Override
-        public final SimScorer simScorer(final SimWeight stats, final LeafReaderContext context)
-                throws IOException {
-            final IDFStats idfstats = (IDFStats) stats;
-            return new TFIDFSimScorer(idfstats, context);
-        }
-
-        private float tf(final float freq) {
-            return (float) Math.sqrt(freq);
-        }
-
-        private Explanation idfExplain(final CollectionStatistics collectionStats,
-                final TermStatistics termStats) {
-            final long df = termStats.docFreq();
-            final long max = collectionStats.maxDoc();
-            final float idf = idf(df, max);
-            return Explanation.match(idf, "idf(docFreq=" + df + ", maxDocs=" + max + ")");
-        }
-
-        private Explanation idfExplain(final CollectionStatistics collectionStats,
-                final TermStatistics termStats[]) {
-            final long max = collectionStats.maxDoc();
-            float idf = 0.0f;
-            final List<Explanation> subs = new ArrayList<>();
-            for (final TermStatistics stat : termStats) {
-                final long df = stat.docFreq();
-                final float termIdf = idf(df, max);
-                subs.add(Explanation
-                        .match(termIdf, "idf(docFreq=" + df + ", maxDocs=" + max + ")"));
-                idf += termIdf;
-            }
-            return Explanation.match(idf, "idf(), sum of:", subs);
-        }
-
-        private float idf(final long docFreq, final long numDocs) {
-            return (float) (Math.log(numDocs / (double) (docFreq + 1)) + 1.0);
-        }
-
-        private final float decodeNormValue(final long norm) {
-            return NORM_TABLE[(int) (norm & 0xFF)]; // & 0xFF maps negative bytes to positive above 127
-        }
-
-        private final long encodeNormValue(final float f) {
-            return SmallFloat.floatToByte315(f);
-        }
-
-        private float sloppyFreq(final int distance) {
-            return 1.0f / (distance + 1); // unused
-        }
-
-        private final class TFIDFSimScorer extends SimScorer {
-
-            private final LeafReaderContext context;
-
-            private final IDFStats stats;
-
-            private final float weightValue;
-
-            private final NumericDocValues norms;
-
-            TFIDFSimScorer(final IDFStats stats, final LeafReaderContext context)
-                    throws IOException {
-                this.context = context;
-                this.stats = stats;
-                this.weightValue = stats.value;
-                this.norms = this.context.reader().getNormValues(stats.field);
-            }
-
-            @Override
-            public float score(final int doc, final float freq) {
-
-                // UNCOMMENT HERE TO OBTAIN WEIGHTS FROM INDEXED PAYLOADS
-                //    float weight = 1.0f;
-                //    try {
-                //        final PostingsEnum pe = this.context.reader().postings(
-                //                new org.apache.lucene.index.Term(this.stats.field,
-                //                        this.stats.tokens.get(0)), PostingsEnum.PAYLOADS);
-                //        pe.advance(doc);
-                //        pe.nextPosition();
-                //        final BytesRef payload = pe.getPayload();
-                //        if (payload != null) {
-                //            weight = Float.intBitsToFloat(Ints.fromByteArray(payload.bytes));
-                //        }
-                //    } catch (final IOException ex) {
-                //        Throwables.propagate(ex);
-                //    }
-                return tf(freq) * this.weightValue; // compute tf(f)*weight
-            }
-
-            @Override
-            public float computeSlopFactor(final int distance) {
-                return sloppyFreq(distance);
-            }
-
-            @Override
-            public float computePayloadFactor(final int doc, final int start, final int end,
-                    final BytesRef payload) {
-                return 1.0f; // never called (!)
-            }
-
-            @Override
-            public Explanation explain(final int doc, final Explanation freq) {
-                return explainScore(doc, freq, this.stats, this.norms);
-            }
-
-        }
-
-        private static class IDFStats extends SimWeight {
-
-            final String field;
-
-            final List<String> tokens;
-
-            final Explanation idf;
-
-            float queryNorm;
-
-            float boost;
-
-            float queryWeight;
-
-            float value;
-
-            public IDFStats(final String field, final List<String> tokens, final Explanation idf) {
-                this.field = field;
-                this.tokens = tokens;
-                this.idf = idf;
-                normalize(1f, 1f);
-            }
-
-            @Override
-            public float getValueForNormalization() {
-                return this.queryWeight * this.queryWeight; // sum of squared weights
-            }
-
-            @Override
-            public void normalize(final float queryNorm, final float boost) {
-                this.boost = boost;
-                this.queryNorm = queryNorm;
-                this.queryWeight = queryNorm * boost * this.idf.getValue();
-                this.value = this.queryWeight * this.idf.getValue();
-            }
-
-        }
-
-        private Explanation explainQuery(final IDFStats stats) {
-            final List<Explanation> subs = new ArrayList<>();
-
-            final Explanation boostExpl = Explanation.match(stats.boost, "boost");
-            if (stats.boost != 1.0f) {
-                subs.add(boostExpl);
-            }
-            subs.add(stats.idf);
-
-            final Explanation queryNormExpl = Explanation.match(stats.queryNorm, "queryNorm");
-            subs.add(queryNormExpl);
-
-            return Explanation.match(
-                    boostExpl.getValue() * stats.idf.getValue() * queryNormExpl.getValue(),
-                    "queryWeight, product of:", subs);
-        }
-
-        private Explanation explainField(final int doc, final Explanation freq,
-                final IDFStats stats, final NumericDocValues norms) {
-            final Explanation tfExplanation = Explanation.match(tf(freq.getValue()), "tf(freq="
-                    + freq.getValue() + "), with freq of:", freq);
-            final Explanation fieldNormExpl = Explanation.match(
-                    norms != null ? decodeNormValue(norms.get(doc)) : 1.0f, "fieldNorm(doc=" + doc
-                            + ")");
-
-            return Explanation.match(tfExplanation.getValue() * stats.idf.getValue()
-                    * fieldNormExpl.getValue(), "fieldWeight in " + doc + ", product of:",
-                    tfExplanation, stats.idf, fieldNormExpl);
-        }
-
-        private Explanation explainScore(final int doc, final Explanation freq,
-                final IDFStats stats, final NumericDocValues norms) {
-            final Explanation queryExpl = explainQuery(stats);
-            final Explanation fieldExpl = explainField(doc, freq, stats, norms);
-            if (queryExpl.getValue() == 1f) {
-                return fieldExpl;
-            }
-            return Explanation.match(queryExpl.getValue() * fieldExpl.getValue(), "score(doc="
-                    + doc + ",freq=" + freq.getValue() + "), product of:", queryExpl, fieldExpl);
-        }
-
     }
 
 }

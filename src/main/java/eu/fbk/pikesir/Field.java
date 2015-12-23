@@ -28,7 +28,11 @@ public enum Field {
 
     CONCEPT("concept"),
 
-    TAXONOMIC("taxonomic");
+    TAXONOMIC("taxonomic"),
+
+    FRAME("frame"),
+
+    TIME("time");
 
     private static Map<String, Field> idMap = null;
 

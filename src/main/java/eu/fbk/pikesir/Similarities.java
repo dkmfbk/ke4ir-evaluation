@@ -51,8 +51,8 @@ public class Similarities {
     }
 
     public static Similarity createTfIdfSimilarity(final boolean enableCoord,
-            final boolean enableNorm) {
-        return new TfIdfSimilarity(enableCoord, enableNorm);
+            final boolean enableNorm, final boolean enableQNorm) {
+        return new TfIdfSimilarity(enableCoord, enableNorm, enableQNorm);
     }
 
     public static Similarity createWeightSimilarity(final boolean enableIDF) {
@@ -76,9 +76,11 @@ public class Similarities {
                     properties.getProperty(prefix + "tfidf.coord", "false"));
             final boolean enableNorm = Boolean.parseBoolean( //
                     properties.getProperty(prefix + "tfidf.norm", "false"));
+            final boolean enableQNorm = Boolean.parseBoolean( //
+                    properties.getProperty(prefix + "tfidf.qnorm", "false"));
             tfidfFields = ImmutableSet.copyOf(splitter.split( //
                     properties.getProperty(prefix + "tfidf.fields", "")));
-            tfidfSimilarity = createTfIdfSimilarity(enableCoord, enableNorm);
+            tfidfSimilarity = createTfIdfSimilarity(enableCoord, enableNorm, enableQNorm);
         }
 
         // Create a weight similarity, if enabled
@@ -201,9 +203,40 @@ public class Similarities {
 
         private final boolean enableNorm;
 
-        TfIdfSimilarity(final boolean enableCoord, final boolean enableNorm) {
+        private final boolean enableQNorm;
+
+        TfIdfSimilarity(final boolean enableCoord, final boolean enableNorm,
+                final boolean enableQNorm) {
             this.enableCoord = enableCoord;
             this.enableNorm = enableNorm;
+            this.enableQNorm = enableQNorm;
+        }
+
+        @Override
+        public float idf(final long docFreq, final long numDocs) {
+            return (float) (Math.log(numDocs / (double) (docFreq + 1)) + 1.0); // used in tests
+            // return (float) Math.log(numDocs / (double) docFreq); // used in paper
+        }
+
+        // uncomment to print idf values
+        //        @Override
+        //        public Explanation idfExplain(final CollectionStatistics collectionStats,
+        //                final TermStatistics termStats) {
+        //            final Explanation e = super.idfExplain(collectionStats, termStats);
+        //            System.err.println(collectionStats.field() + " - " + termStats.term().utf8ToString()
+        //                    + " - " + e);
+        //            return e;
+        //        }
+
+        @Override
+        public float tf(final float freq) {
+            return (float) Math.sqrt(freq); // used in tests
+            // return freq <= 0.0f ? 0.0f : (float) (1.0 + Math.log(freq)); // used in paper
+        }
+
+        @Override
+        public float queryNorm(final float sumOfSquaredWeights) {
+            return this.enableQNorm ? super.queryNorm(sumOfSquaredWeights) : 1.0f;
         }
 
         @Override

@@ -3,8 +3,10 @@ package eu.fbk.pikesir;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 
+import com.google.common.base.MoreObjects;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.primitives.Doubles;
 
@@ -44,6 +46,11 @@ public abstract class Aggregator {
         return new MinAggregator(normalize);
     }
 
+    public static Aggregator createBalanced(final boolean normalize, final String textLayer,
+            final double textWeight, final Map<String, Double> semanticWeights) {
+        return new BalancedAggregator(normalize, textLayer, textWeight, semanticWeights);
+    }
+
     public static Aggregator create(final Path root, final Properties properties, String prefix) {
 
         // Normalize prefix, ensuring it ends with '.'
@@ -71,6 +78,14 @@ public abstract class Aggregator {
             return createMaxAggregator(normalize);
         } else if (type.equals("min")) {
             return createMinAggregator(normalize);
+        } else if (type.equals("balanced")) {
+            final String textLayer = properties.getProperty(prefix + "balanced.textlayer",
+                    "textual");
+            final double textWeight = Double.parseDouble(properties.getProperty(prefix
+                    + "balanced.textweight", "0.5"));
+            final Map<String, Double> semanticWeights = Util.parseMap(
+                    properties.getProperty(prefix + "balanced.semanticweights"), Double.class);
+            return createBalanced(normalize, textLayer, textWeight, semanticWeights);
         } else {
             throw new IllegalArgumentException("Invalid aggregator type '" + type + "'");
         }
@@ -94,13 +109,22 @@ public abstract class Aggregator {
             final int numLayers = layers.length;
 
             // If normalization is enabled, obtain max scores for each layer
-            double[] maxScores = null;
+            double[] normMultipliers = null;
             if (this.normalize) {
-                maxScores = new double[numLayers];
+                final double[] minScores = new double[numLayers];
+                final double[] maxScores = new double[numLayers];
+                final double[] sumScores = new double[numLayers];
                 for (final Hit hit : hits) {
                     for (int i = 0; i < numLayers; ++i) {
-                        maxScores[i] = Math.max(maxScores[i], hit.getLayerScore(layers[i]));
+                        final double score = hit.getLayerScore(layers[i]);
+                        minScores[i] = minScores[i] == 0.0 ? score : Math.min(minScores[i], score);
+                        maxScores[i] = Math.max(maxScores[i], score);
+                        sumScores[i] += score;
                     }
+                }
+                normMultipliers = new double[numLayers];
+                for (int i = 0; i < numLayers; ++i) {
+                    normMultipliers[i] = maxScores[i] == 0.0 ? 0.0 : 1.0 / maxScores[i];
                 }
             }
 
@@ -111,8 +135,8 @@ public abstract class Aggregator {
                 final TermVector docVector = docVectors.get(i);
                 for (int j = 0; j < numLayers; ++j) {
                     double score = hit.getLayerScore(layers[j]);
-                    if (this.normalize && maxScores[j] != 0.0) {
-                        score = score / maxScores[j];
+                    if (this.normalize) {
+                        score = score * normMultipliers[j];
                     }
                     scores[j] = score;
                 }
@@ -140,8 +164,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
-                double[] scores) {
+        double aggregate(final List<String> layers, final TermVector queryVector,
+                final TermVector docVector, final double[] scores) {
             double sum = 0.0;
             double sumWeights = 0.0;
             for (int i = 0; i < scores.length; ++i) {
@@ -170,8 +194,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
-                double[] scores) {
+        double aggregate(final List<String> layers, final TermVector queryVector,
+                final TermVector docVector, final double[] scores) {
             double sum = 0.0;
             for (int i = 0; i < scores.length; ++i) {
                 sum += scores[i];
@@ -188,8 +212,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
-                double[] scores) {
+        double aggregate(final List<String> layers, final TermVector queryVector,
+                final TermVector docVector, final double[] scores) {
             double product = 0.0;
             for (int i = 0; i < scores.length; ++i) {
                 product *= scores[i];
@@ -208,8 +232,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
-                double[] scores) {
+        double aggregate(final List<String> layers, final TermVector queryVector,
+                final TermVector docVector, final double[] scores) {
             double weight = 1.0;
             double sum = 0.0;
             for (int i = 0; i < scores.length; ++i) {
@@ -230,8 +254,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
-                double[] scores) {
+        double aggregate(final List<String> layers, final TermVector queryVector,
+                final TermVector docVector, final double[] scores) {
             int count = 0;
             double sum = 0.0;
             for (int i = 0; i < scores.length; ++i) {
@@ -252,8 +276,8 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
-                double[] scores) {
+        double aggregate(final List<String> layers, final TermVector queryVector,
+                final TermVector docVector, final double[] scores) {
             return Doubles.max(scores);
         }
 
@@ -266,9 +290,61 @@ public abstract class Aggregator {
         }
 
         @Override
-        double aggregate(List<String> layers, TermVector queryVector, TermVector docVector,
-                double[] scores) {
+        double aggregate(final List<String> layers, final TermVector queryVector,
+                final TermVector docVector, final double[] scores) {
             return Doubles.min(scores);
+        }
+
+    }
+
+    private static final class BalancedAggregator extends SimpleAggregator {
+
+        private final String textLayer;
+
+        private final double textWeight;
+
+        private final Map<String, Double> semanticWeights;
+
+        BalancedAggregator(final boolean normalize, final String textLayer,
+                final double textWeight, final Map<String, Double> semanticWeights) {
+            super(normalize);
+            this.textLayer = Objects.requireNonNull(textLayer);
+            this.textWeight = textWeight;
+            this.semanticWeights = ImmutableMap.copyOf(semanticWeights);
+        }
+
+        @Override
+        double aggregate(final List<String> layers, final TermVector queryVector,
+                final TermVector docVector, final double[] scores) {
+
+            double textScore = 0.0;
+
+            double semanticSum = 0.0;
+            double semanticWeight = 0.0;
+
+            for (int i = 0; i < scores.length; ++i) {
+                final String layer = layers.get(i);
+                final double score = scores[i];
+                if (layer.equals(this.textLayer)) {
+                    textScore = score;
+                } else {
+                    final double weight = MoreObjects.firstNonNull(
+                            this.semanticWeights.get(layer), 0.0);
+                    semanticSum += weight * score;
+                    semanticWeight += weight;
+                }
+            }
+
+            final double semanticScore = semanticWeight == 0.0 ? 0.0 : semanticSum
+                    / semanticWeight;
+
+            return this.textWeight * textScore + (1.0 - this.textWeight) * semanticScore;
+        }
+
+        @Override
+        public String toString() {
+            return getClass().getSimpleName() + "(text: " + this.textLayer + ", text weight: "
+                    + this.textWeight + ", semantic weights: " + this.semanticWeights + ")";
         }
 
     }

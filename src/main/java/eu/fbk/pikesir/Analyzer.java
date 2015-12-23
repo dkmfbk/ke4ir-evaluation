@@ -8,6 +8,7 @@ import java.util.Properties;
 import java.util.Set;
 
 import javax.annotation.Nullable;
+import javax.xml.datatype.XMLGregorianCalendar;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Throwables;
@@ -15,11 +16,13 @@ import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 
+import org.openrdf.model.Literal;
 import org.openrdf.model.Resource;
 import org.openrdf.model.Statement;
 import org.openrdf.model.URI;
@@ -29,6 +32,9 @@ import org.openrdf.model.impl.URIImpl;
 import org.openrdf.model.vocabulary.RDF;
 import org.openrdf.model.vocabulary.RDFS;
 import org.openrdf.model.vocabulary.SKOS;
+import org.openrdf.model.vocabulary.XMLSchema;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.tartarus.snowball.SnowballProgram;
 
 import ixa.kaflib.KAFDocument;
@@ -36,7 +42,14 @@ import ixa.kaflib.KAFDocument;
 import eu.fbk.pikesir.TermVector.Builder;
 import eu.fbk.rdfpro.util.QuadModel;
 
+/*
+ * For ESWC 2016 we used only the 'SemanticAnalyzer'. The 'TaxonomicAnalyzer' is an attempt at
+ * implementing the taxonomic approach by H. Sack & co.
+ */
+
 public abstract class Analyzer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(Analyzer.class);
 
     public abstract void analyze(KAFDocument document, QuadModel model,
             TermVector.Builder builder, boolean isQuery);
@@ -89,8 +102,8 @@ public abstract class Analyzer {
         return new TaxonomicAnalyzer(alpha);
     }
 
-    public static Analyzer createSemanticAnalyzer(final boolean expandQueries) {
-        return new SemanticAnalyzer(expandQueries);
+    public static Analyzer createSemanticAnalyzer(final boolean expandQueryTypes) {
+        return new SemanticAnalyzer(expandQueryTypes);
     }
 
     public static Analyzer create(final Path root, final Properties properties, String prefix) {
@@ -144,9 +157,9 @@ public abstract class Analyzer {
 
         // Add a semantic analyzer, if enabled
         if (Boolean.parseBoolean(properties.getProperty(prefix + "semantic", "false"))) {
-            final boolean expandQueries = Boolean.parseBoolean(properties.getProperty(prefix
-                    + "semantic.expandqueries", "false"));
-            analyzers.add(createSemanticAnalyzer(expandQueries));
+            final boolean expandQueryTypes = Boolean.parseBoolean(properties.getProperty(prefix
+                    + "semantic.expandQueryTypes", "false"));
+            analyzers.add(createSemanticAnalyzer(expandQueryTypes));
         }
 
         // Combine the enrichers
@@ -279,6 +292,7 @@ public abstract class Analyzer {
                             stemmer.stem();
                             final String subWordStem = stemmer.getCurrent();
                             builder.addTerm(Field.STEM, subWordStem);
+                            // builder.addTerm(Field.ALL, "stem:" + subWordStem);
                         } catch (final InstantiationException | IllegalAccessException ex) {
                             Throwables.propagate(ex);
                         }
@@ -717,22 +731,30 @@ public abstract class Analyzer {
         private static final URI DENOTED_BY = new URIImpl(
                 "http://groundedannotationframework.org/gaf#denotedBy");
 
+        private static final URI HAS_DATE_TIME_DESCRIPTION = new URIImpl(
+                "http://www.w3.org/TR/owl-time#hasDateTimeDescription");
+
         private static final Map<String, Field> TYPE_MAP = ImmutableMap.of( //
-                "http://dbpedia.org/class/yago/", Field.TYPE_YAGO, //
-                "http://www.ontologyportal.org/SUMO.owl#", Field.TYPE_SUMO, //
-                "http://framebase.org/ns/", Field.PREDICATE_FRB, //
-                "http://www.newsreader-project.eu/ontologies/propbank/", Field.PREDICATE_PB, //
-                "http://www.newsreader-project.eu/ontologies/nombank/", Field.PREDICATE_NB);
+                "http://dbpedia.org/class/yago/", Field.TYPE_YAGO //
+                // "http://www.ontologyportal.org/SUMO.owl#", Field.TYPE_SUMO, //
+                );
+
+        private static final Map<String, Field> PREDICATE_MAP = ImmutableMap.of( //
+                "http://framebase.org/ns/", Field.PREDICATE_FRB //
+                // "http://framebase.org/ns/", Field.PREDICATE_FRB //
+                //"http://www.newsreader-project.eu/ontologies/propbank/", Field.PREDICATE_PB, //
+                //"http://www.newsreader-project.eu/ontologies/nombank/", Field.PREDICATE_NB
+                );
 
         private static final Map<String, Field> ROLE_MAP = ImmutableMap.of( //
                 "http://framebase.org/ns/", Field.ROLE_FRB, //
                 "http://www.newsreader-project.eu/ontologies/propbank/", Field.ROLE_PB, //
                 "http://www.newsreader-project.eu/ontologies/nombank/", Field.ROLE_NB);
 
-        private final boolean expandQueries;
+        private final boolean expandQueryTypes;
 
-        SemanticAnalyzer(final boolean expandQueries) {
-            this.expandQueries = expandQueries;
+        SemanticAnalyzer(final boolean expandQueryTypes) {
+            this.expandQueryTypes = expandQueryTypes;
         }
 
         @Override
@@ -746,11 +768,18 @@ public abstract class Analyzer {
                 // Obtain number of mentions for current entity
                 final int numMentions = model.filter(entity, DENOTED_BY, null).size();
 
-                // Obtain types
+                // Obtain types and predicates
                 final Set<URI> types = Sets.newHashSet();
-                for (final Value type : model.filter(entity, RDF.TYPE, null).objects()) {
-                    if (type instanceof URI && TYPE_MAP.containsKey(((URI) type).getNamespace())) {
-                        types.add((URI) type);
+                final Set<URI> predicates = Sets.newHashSet();
+                for (final Value value : model.filter(entity, RDF.TYPE, null).objects()) {
+                    if (value instanceof URI) {
+                        final URI uri = (URI) value;
+                        final String ns = uri.getNamespace();
+                        if (TYPE_MAP.containsKey(ns)) {
+                            types.add(uri);
+                        } else if (PREDICATE_MAP.containsKey(ns)) {
+                            predicates.add(uri);
+                        }
                     }
                 }
 
@@ -762,35 +791,68 @@ public abstract class Analyzer {
                     }
                 }
 
-                // Remove inherited types and roles, if necessary
-                if (isQuery && !this.expandQueries) {
-                    for (final URI type : ImmutableList.copyOf(types)) {
-                        List<URI> parentTypes = parentMap.get(type);
-                        if (parentTypes == null) {
-                            parentTypes = Lists.newArrayList();
-                            parentMap.put(type, parentTypes);
-                            for (final Value parentType : model
-                                    .filter(type, RDFS.SUBCLASSOF, null).objects()) {
-                                if (parentType instanceof URI && !parentType.equals(type)) {
-                                    parentTypes.add((URI) parentType);
-                                }
+                // Obtain predicate participants
+                Set<URI> participants = ImmutableSet.of();
+                if (!roles.isEmpty()) {
+                    participants = Sets.newHashSet();
+                    for (final URI role : roles) {
+                        for (final Value value : model.filter(entity, role, null).objects()) {
+                            if (value instanceof URI && ((URI) value).getNamespace().equals( //
+                                    "http://dbpedia.org/resource/")) {
+                                participants.add((URI) value);
                             }
                         }
-                        types.removeAll(parentTypes);
                     }
-                    for (final URI role : ImmutableList.copyOf(roles)) {
-                        List<URI> parentRoles = parentMap.get(role);
-                        if (parentRoles == null) {
-                            parentRoles = Lists.newArrayList();
-                            parentMap.put(role, parentRoles);
-                            for (final Value parentRole : model.filter(role, RDFS.SUBPROPERTYOF,
-                                    null).objects()) {
-                                if (parentRole instanceof URI && !parentRole.equals(role)) {
-                                    parentRoles.add((URI) parentRole);
+                }
+
+                // Obtain date components
+                final List<String> times = Lists.newArrayList();
+                for (final Resource uri : Iterables.concat(ImmutableList.of(entity), types)) {
+                    for (final Statement stmt : model.filter(uri, null, null)) {
+                        if (stmt.getObject() instanceof Literal) {
+                            final Literal lit = (Literal) stmt.getObject();
+                            final URI dt = lit.getDatatype();
+                            if (dt.equals(XMLSchema.DATETIME) || dt.equals(XMLSchema.DATE)
+                                    || dt.equals(XMLSchema.GYEAR)
+                                    || dt.equals(XMLSchema.GYEARMONTH)) {
+                                getDateComponents(lit, times, times, times, times, times);
+                            }
+                        } else if (stmt.getObject() instanceof URI
+                                && stmt.getPredicate().equals(HAS_DATE_TIME_DESCRIPTION)) {
+                            String str = ((URI) stmt.getObject()).getLocalName();
+                            final int index = str.indexOf("_desc");
+                            if (index >= 0) {
+                                str = str.substring(0, index);
+                                if (str.length() >= 4) {
+                                    final int year = Integer.parseInt(str.substring(0, 4));
+                                    times.add("century:" + year / 100);
+                                    times.add("decade:" + year / 10);
+                                    times.add("year:" + year);
+                                    if (str.length() >= 6) {
+                                        final int month = Integer.parseInt(str.substring(4, 6));
+                                        times.add("month:" + year + "-" + month);
+                                    }
                                 }
                             }
                         }
-                        roles.removeAll(parentRoles);
+                    }
+                }
+
+                // Emit frame terms
+                final double frameWeight = isQuery ? (double) numMentions
+                        / (participants.size() * predicates.size()) : numMentions;
+                for (final URI participant : participants) {
+                    for (final URI predicate : predicates) {
+                        final String id = predicate.getLocalName() + "__"
+                                + participant.getLocalName();
+                        builder.addTerm(Field.FRAME, id, frameWeight);
+                    }
+                }
+
+                // Remove inherited types and roles, if necessary
+                if (!this.expandQueryTypes && isQuery) {
+                    for (final URI type : ImmutableList.copyOf(types)) {
+                        types.removeAll(getParents(type, parentMap, RDFS.SUBCLASSOF, model));
                     }
                 }
 
@@ -805,14 +867,94 @@ public abstract class Analyzer {
                 // Emit type terms
                 for (final URI type : types) {
                     final Field field = TYPE_MAP.get(type.getNamespace());
-                    builder.addTerm(field, type.getLocalName(), numMentions);
+                    final double weight = isQuery ? (double) numMentions / types.size()
+                            : numMentions;
+                    builder.addTerm(field, type.getLocalName(), weight);
                 }
 
-                // Emit role terms
-                for (final URI role : roles) {
-                    final Field field = ROLE_MAP.get(role.getNamespace());
-                    builder.addTerm(field, role.getLocalName(), numMentions);
+                // Emit time components
+                if (!times.isEmpty()) {
+                    if (isQuery) {
+                        final Set<String> set = ImmutableSet.copyOf(times);
+                        final double weight = (double) numMentions / set.size();
+                        for (final String element : set) {
+                            builder.addTerm(Field.TIME, element, weight);
+                        }
+                    } else {
+                        for (final String element : ImmutableSet.copyOf(times)) {
+                            builder.addTerm(Field.TIME, element, numMentions);
+                        }
+                    }
                 }
+            }
+        }
+
+        private static List<URI> getParents(final URI uri, final Map<URI, List<URI>> parentMap,
+                final URI parentProperty, final QuadModel model) {
+            List<URI> parents = parentMap.get(uri);
+            if (parents == null) {
+                parents = Lists.newArrayList();
+                parentMap.put(uri, parents);
+                for (final Value parent : model.filter(uri, parentProperty, null).objects()) {
+                    if (parent instanceof URI && !parent.equals(uri)) {
+                        parents.add((URI) parent);
+                    }
+                }
+            }
+            return parents;
+        }
+
+        private static void getDateComponents(final Literal literal, final List<String> centuries,
+                final List<String> decades, final List<String> years, final List<String> months,
+                final List<String> days) {
+
+            try {
+                if (!literal.getDatatype().equals(XMLSchema.DATETIME)) {
+
+                    final XMLGregorianCalendar calendarValue = literal.calendarValue();
+                    final Integer day = calendarValue.getDay();
+                    final Integer month = calendarValue.getMonth();
+                    final Integer year = calendarValue.getYear();
+                    final Integer decade = year / 10;
+                    final Integer century = year / 100;
+
+                    if (literal.getDatatype().equals(XMLSchema.DATE)) {
+                        centuries.add("century:" + century);
+                        decades.add("decade:" + decade);
+                        years.add("year:" + year);
+                        months.add("month:" + year + "-" + month);
+                        days.add("day:" + year + "-" + month + "-" + day);
+                    }
+
+                    if (literal.getDatatype().equals(XMLSchema.GYEARMONTH)) {
+                        centuries.add("century:" + century);
+                        decades.add("decade:" + decade);
+                        years.add("year:" + year);
+                        months.add("month:" + year + "-" + month);
+                    }
+
+                    if (literal.getDatatype().equals(XMLSchema.GYEAR)) {
+                        centuries.add("century:" + century);
+                        decades.add("decade:" + decade);
+                        years.add("year:" + year);
+                    }
+
+                } else {
+                    final Integer year = Integer.parseInt(literal.stringValue().substring(0, 4));
+                    final Integer month = Integer.parseInt(literal.stringValue().substring(5, 7));
+                    final Integer day = Integer.parseInt(literal.stringValue().substring(8, 10));
+                    final Integer decade = year / 10;
+                    final Integer century = year / 100;
+
+                    centuries.add("century:" + century);
+                    decades.add("decade:" + decade);
+                    years.add("year:" + year);
+                    months.add("month:" + year + "-" + month);
+                    days.add("day:" + year + "-" + month + "-" + day);
+                }
+            } catch (final Throwable ex) {
+                // Ignore
+                LOGGER.warn("Could not extract date components from " + literal, ex);
             }
         }
 
