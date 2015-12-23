@@ -21,10 +21,6 @@
         level="INFO" />
 
     <logger
-        name="eu.fbk.pikesir"
-        level="INFO" />
-
-    <logger
         name="status"
         additivity="false"
         level="INFO">
