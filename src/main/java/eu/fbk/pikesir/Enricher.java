@@ -10,6 +10,7 @@ import java.util.Set;
 import javax.annotation.Nullable;
 
 import com.google.common.base.Joiner;
+import com.google.common.base.Strings;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -24,23 +25,60 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import eu.fbk.pikesir.util.KeyQuadIndex;
-import eu.fbk.pikesir.util.KeyQuadSource;
 import eu.fbk.rdfpro.RDFHandlers;
 import eu.fbk.rdfpro.RDFProcessors;
 import eu.fbk.rdfpro.RDFSources;
 import eu.fbk.rdfpro.util.QuadModel;
 
+/**
+ * Enriches a document or query knowledge graph before it is analyzed for extracting semantic
+ * terms.
+ *
+ * <p>
+ * Enrichment is performed by calling method {@link #enrich(QuadModel)} and consists in adding
+ * additional triples to the graph. Two basic kinds of enrichment are provided by this class
+ * (additional enrichers can be implemented by subclassing):
+ * <ul>
+ * <li>URI enrichment (configured via {@link #createURIEnricher(Path, Iterable, Iterable)} matches
+ * selected URIs in the graph and add additional triples having them as subjects, possibly
+ * repeating the process recursively for newly introduced URIs;</li>
+ * <li>RDFS enrichment (configured via {@link #createRDFSEnricher()} materializes the RDFS closure
+ * of the knowledge graph.</li>
+ * </ul>
+ * These enrichers can be concatenated in a composite enricher applying them in sequence via
+ * method {@link #concat(Enricher...)}. Method {@link #create(Path, Properties, String)} allows to
+ * create an enricher based on a {@link Properties} object.
+ * </p>
+ */
 public abstract class Enricher {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(Enricher.class);
 
+    /**
+     * Enriches the (document or query) knowledge graph specified. The graph is passed as
+     * QuadModel which is modified in place by the method.
+     *
+     * @param model
+     *            the graph to enrich
+     */
     public abstract void enrich(QuadModel model);
 
+    /**
+     * {@inheritDoc} Emits a descriptive string describe the Enricher and its options.
+     */
     @Override
     public String toString() {
         return getClass().getSimpleName();
     }
 
+    /**
+     * Returns a composite enricher that concatenates the supplied enricher, calling each of them
+     * in sequence on the same knowledge graph.
+     *
+     * @param enrichers
+     *            the enrichers to concatenate
+     * @return the resulting composite enricher
+     */
     public static Enricher concat(final Enricher... enrichers) {
         if (enrichers.length == 0) {
             return createNullEnricher();
@@ -51,24 +89,82 @@ public abstract class Enricher {
         }
     }
 
+    /**
+     * Returns a null enricher that does not perform any form of enrichment.
+     *
+     * @return a null enricher, which does not modify the supplied knowledge graph.
+     */
     public static Enricher createNullEnricher() {
         return NullEnricher.INSTANCE;
     }
 
+    /**
+     * Returns an enricher that adds to the knowledge graph all the triples that can be
+     * materialized via RDFS inference. Inference is performed via RDFpro. {@code rdfs:Resource}
+     * type triples are not materialized (i.e., rules rdfs4a, rdfs4b, rdfs8 are disabled).
+     *
+     * @return an enricher performing RDFS inference
+     */
     public static Enricher createRDFSEnricher() {
         return RDFSEnricher.INSTANCE;
     }
 
+    /**
+     * Returns an enricher that augments selected URIs with additional triples loaded from an
+     * external key-value index. The index is maps a URI to the set of RDF triples. If the
+     * knowledge graph being enriched contains that URI, it is augmented with the associated set
+     * of triples. The URIs to enrich are selected based on their namespaces. This process can be
+     * done non-recursively, i.e., only for URIs originally present in the knowledge graph, or
+     * recursively, i.e., also for URIs that are added to the knowledge graph as a result of a
+     * previous enrichment. Recursion can be enabled selectively based on the URI namespace, and
+     * is particularly useful to add TBox data, as it allows to add {@code rdfs:subClassOf}
+     * triples for classes in the graph, and recursively all their superclasses and so on.
+     *
+     * @param indexPath
+     *            the path where the files of the persistent key-value index are stored; the index
+     *            must have been created in advance using {@link KeyQuadIndex#main(String...)}.
+     * @param nonRecursiveNamespaces
+     *            the URI namespaces for which to enable non-recursive enrichment
+     * @param recursiveNamespaces
+     *            the URI namespaces for which to enable recursive enrichment
+     * @return the created enricher
+     */
     public static Enricher createURIEnricher(final Path indexPath,
             final Iterable<String> nonRecursiveNamespaces,
             final Iterable<String> recursiveNamespaces) {
         return new URIEnricher(indexPath, nonRecursiveNamespaces, recursiveNamespaces);
     }
 
-    public static Enricher create(final Path root, final Properties properties, String prefix) {
+    /**
+     * Returns an enricher based on the configuration properties supplied. The method looks for
+     * certain properties within the {@link Properties} object supplied, prepending them an
+     * optional prefix (e.g., if property is X and the prefix is Y, the method will look for
+     * property Y.X). The path parameter is used as the base directory for resolving relative
+     * paths contained in the examined properties. The properties currently supported are:
+     * <ul>
+     * <li>{@code uri.index} - if specified, a URI enricher is configured loading the associated
+     * index from the path used as value of the property;</li>
+     * <li>{@code uri.recursion} - a space-separated list of namespace URI strings controlling for
+     * which URIs recursive URI enrichment should be enabled;</li>
+     * <li>{@code uri.norecursion} - a space-separated list of namespace URI strings controlling
+     * for which URIs non-recursive URI enrichment should be enabled;</li>
+     * <li>{@code rdfs} - if set to true, it will append an RDFS enricher (see
+     * {@link #createRDFSEnricher()}) as the final enrichment step;</li>
+     * </ul>
+     *
+     * @param root
+     *            the base directory for resolving relative paths
+     * @param properties
+     *            the configuration properties
+     * @param prefix
+     *            an optional prefix to prepend to supported properties
+     * @return an enricher adhering to the specified configuration (upon success)
+     */
+    public static Enricher create(final Path root, final Properties properties,
+            @Nullable String prefix) {
 
         // Normalize prefix, ensuring it ends with '.'
-        prefix = prefix.endsWith(".") ? prefix : prefix + ".";
+        prefix = Strings.isNullOrEmpty(prefix) ? "" : prefix.endsWith(".") ? prefix : prefix + ".";
 
         // Build a list of enrichers to be later combined
         final List<Enricher> enrichers = new ArrayList<>();
@@ -123,6 +219,7 @@ public abstract class Enricher {
 
         @Override
         public void enrich(final QuadModel model) {
+            // leave the knowledge graph unchanged
         }
 
     }
@@ -152,7 +249,7 @@ public abstract class Enricher {
         private final Path indexPath;
 
         @Nullable
-        private KeyQuadSource index;
+        private KeyQuadIndex index;
 
         private final Set<String> nonRecursiveNamespaces;
 
@@ -218,8 +315,10 @@ public abstract class Enricher {
             return false;
         }
 
-        private synchronized KeyQuadSource getIndex() {
+        private synchronized KeyQuadIndex getIndex() {
             if (this.index == null) {
+                // The index is loaded on-demand, to avoid incurring in the associated cost when
+                // the enricher object is created (e.g., because configured) but never called
                 this.index = new KeyQuadIndex(this.indexPath.toFile());
             }
             return this.index;
