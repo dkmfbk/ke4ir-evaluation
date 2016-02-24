@@ -230,7 +230,8 @@ public class Similarities {
 
         @Override
         public float tf(final float freq) {
-            return (float) Math.sqrt(freq); // used in tests
+            return (float) Math.sqrt(freq); // used in tests and by Lucene
+            // return freq; // standard formula referenced by reviewer
             // return freq <= 0.0f ? 0.0f : (float) (1.0 + Math.log(freq)); // used in paper
         }
 
