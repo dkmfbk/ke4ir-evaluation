@@ -66,7 +66,6 @@ import ixa.kaflib.KAFDocument;
 
 import eu.fbk.pikesir.lucene.WeightAnalyzer;
 import eu.fbk.pikesir.util.CommandLine;
-import eu.fbk.pikesir.util.Util;
 import eu.fbk.rdfpro.AbstractRDFHandlerWrapper;
 import eu.fbk.rdfpro.RDFHandlers;
 import eu.fbk.rdfpro.RDFSources;
@@ -106,15 +105,9 @@ public class PikesIR {
 
     private final Path pathResults;
 
-    private final Set<Field> weightedFields;
-
     private final List<String> layers;
 
     private final Multimap<String, Field> layerFields;
-
-    private final Map<String, Integer> layerRepetitions;
-
-    private final Map<String, Double> layerBoosts;
 
     private final Set<Set<String>> layerFocus;
 
@@ -273,15 +266,6 @@ public class PikesIR {
         // Retrieve results path
         this.pathResults = root.resolve(properties.getProperty(pr + "results", "results"));
 
-        // Retrieve weighted fields
-        this.weightedFields = Sets.newEnumSet(ImmutableSet.of(), Field.class);
-        for (final String fieldSpec : properties.getProperty(pr + "index.weightedfields", "")
-                .split("[\\s,;]+")) {
-            if (!fieldSpec.trim().isEmpty()) {
-                this.weightedFields.add(Field.forID(fieldSpec.trim()));
-            }
-        }
-
         // Retrieve layers and associated fields
         this.layers = Lists.newArrayList();
         this.layerFields = HashMultimap.create();
@@ -296,12 +280,6 @@ public class PikesIR {
                 this.layerFields.put(layer, field);
             }
         }
-
-        // Retrieve layer boosts and repetitions settings
-        this.layerBoosts = Util.parseMap(properties.getProperty(pr + "layers.boosts"),
-                Double.class);
-        this.layerRepetitions = Util.parseMap(properties.getProperty(pr + "layers.repetitions"),
-                Integer.class);
 
         // Retrieve the layer combinations we focus on
         this.layerFocus = Sets.newHashSet();
@@ -479,19 +457,13 @@ public class PikesIR {
                     for (final Term term : docVector.getTerms(field)) {
                         squaredWeightSum += term.getWeight(); // * term.getWeight();
                         final String fieldValue = "|" + term.getWeight() + "| " + term.getValue();
-                        if (this.weightedFields.contains(term.getField())) {
-                            for (int i = 0; i < (int) Math.ceil(term.getWeight()); ++i) {
-                                doc.add(new TextField(fieldID, fieldValue, Store.YES));
-                            }
-                        } else {
+                        for (int i = 0; i < (int) Math.ceil(term.getWeight()); ++i) {
                             doc.add(new TextField(fieldID, fieldValue, Store.YES));
-                            throw new Error(); // TODO
                         }
                         ++numTerms;
                     }
                     norms.put(field.getID(), 1.0 / Math.sqrt(squaredWeightSum));
                 }
-                Similarities.setDocNorms(norms);
                 writer.addDocument(doc);
             }
         }
@@ -627,36 +599,30 @@ public class PikesIR {
         final Set<String> availableLayers = Sets.newHashSet();
         for (final String layer : this.layers) {
 
-            // Retrieve boost and repetitions for current layer
-            final double boost = this.layerBoosts.getOrDefault(layer, 1.0);
-            final int repetitions = this.layerRepetitions.getOrDefault(layer, 1);
-
             // Compose query
             final StringBuilder builder = new StringBuilder();
             String separator = "";
             for (final Field field : this.layerFields.get(layer)) {
                 for (final Term term : queryVector.getTerms(field)) {
-                    for (int i = 0; i < repetitions; ++i) {
-                        builder.append(separator);
-                        builder.append(field.getID()).append(":\"").append(term.getValue())
-                                .append("\"");
-                        final double actualBoost = boost * term.getWeight();
+                    builder.append(separator);
+                    builder.append(field.getID()).append(":\"").append(term.getValue())
+                            .append("\"");
+                    final double actualBoost = term.getWeight();
 
-                        //                        if (layer.equals("all")) {
-                        //                            if (term.getField() == Field.STEM) {
-                        //                                actualBoost *= .5;
-                        //                            } else {
-                        //                                actualBoost *= .125;
-                        //                            }
-                        //                        }
+                    //                        if (layer.equals("all")) {
+                    //                            if (term.getField() == Field.STEM) {
+                    //                                actualBoost *= .5;
+                    //                            } else {
+                    //                                actualBoost *= .125;
+                    //                            }
+                    //                        }
 
-                        if (actualBoost != 1.0) {
-                            //                            System.err.println(field.getID() + " - " + term.getValue() + " - "
-                            //                                    + actualBoost);
-                            builder.append("^").append(actualBoost);
-                        }
-                        separator = " OR ";
+                    if (actualBoost != 1.0) {
+                        //                            System.err.println(field.getID() + " - " + term.getValue() + " - "
+                        //                                    + actualBoost);
+                        builder.append("^").append(actualBoost);
                     }
+                    separator = " OR ";
                 }
             }
             final String queryString = builder.toString();
@@ -664,7 +630,6 @@ public class PikesIR {
             // If query is non-empty, mark the layer as available and perform the query
             if (!queryString.isEmpty()) {
                 availableLayers.add(layer);
-                Similarities.setQueryTerms(queryVector);
                 final QueryParser parser = new QueryParser("default-field", new WeightAnalyzer());
                 final Query query = parser.parse(queryString);
                 final TopDocs results = searcher.search(query, 1000);
