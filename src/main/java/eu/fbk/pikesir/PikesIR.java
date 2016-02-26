@@ -41,6 +41,7 @@ import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
 import com.google.common.primitives.Doubles;
 
+import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field.Store;
 import org.apache.lucene.document.TextField;
@@ -64,7 +65,6 @@ import org.slf4j.LoggerFactory;
 
 import ixa.kaflib.KAFDocument;
 
-import eu.fbk.pikesir.lucene.WeightAnalyzer;
 import eu.fbk.pikesir.util.CommandLine;
 import eu.fbk.rdfpro.AbstractRDFHandlerWrapper;
 import eu.fbk.rdfpro.RDFHandlers;
@@ -431,12 +431,8 @@ public class PikesIR {
             vectors = TermVector.read(reader);
         }
 
-        // Lucene 4.10.3
-        //final FSDirectory indexDir = FSDirectory.open(this.pathIndex.toFile());
-        //final IndexWriterConfig config = new IndexWriterConfig(Version.LUCENE_4_10_3,
-        //        new KeywordAnalyzer());
         final FSDirectory indexDir = FSDirectory.open(this.pathIndex);
-        final IndexWriterConfig config = new IndexWriterConfig(new WeightAnalyzer());
+        final IndexWriterConfig config = new IndexWriterConfig(new KeywordAnalyzer());
         config.setSimilarity(this.similarity);
 
         int numTerms = 0;
@@ -449,20 +445,17 @@ public class PikesIR {
                 LOGGER.info("Indexing {} - {} terms", docID, entry.getValue().size());
 
                 final Document doc = new Document();
-                final Map<String, Double> norms = Maps.newHashMap();
                 doc.add(new TextField("id", docID, Store.YES));
                 for (final Field field : Field.values()) {
                     final String fieldID = field.getID();
-                    double squaredWeightSum = 0.0;
                     for (final Term term : docVector.getTerms(field)) {
-                        squaredWeightSum += term.getWeight(); // * term.getWeight();
-                        final String fieldValue = "|" + term.getWeight() + "| " + term.getValue();
+                        // final String fieldValue = "|" + term.getWeight() + "| " + term.getValue();
+                        final String fieldValue = term.getValue();
                         for (int i = 0; i < (int) Math.ceil(term.getWeight()); ++i) {
                             doc.add(new TextField(fieldID, fieldValue, Store.YES));
                         }
                         ++numTerms;
                     }
-                    norms.put(field.getID(), 1.0 / Math.sqrt(squaredWeightSum));
                 }
                 writer.addDocument(doc);
             }
@@ -609,17 +602,7 @@ public class PikesIR {
                             .append("\"");
                     final double actualBoost = term.getWeight();
 
-                    //                        if (layer.equals("all")) {
-                    //                            if (term.getField() == Field.STEM) {
-                    //                                actualBoost *= .5;
-                    //                            } else {
-                    //                                actualBoost *= .125;
-                    //                            }
-                    //                        }
-
                     if (actualBoost != 1.0) {
-                        //                            System.err.println(field.getID() + " - " + term.getValue() + " - "
-                        //                                    + actualBoost);
                         builder.append("^").append(actualBoost);
                     }
                     separator = " OR ";
@@ -630,7 +613,7 @@ public class PikesIR {
             // If query is non-empty, mark the layer as available and perform the query
             if (!queryString.isEmpty()) {
                 availableLayers.add(layer);
-                final QueryParser parser = new QueryParser("default-field", new WeightAnalyzer());
+                final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
                 final Query query = parser.parse(queryString);
                 final TopDocs results = searcher.search(query, 1000);
                 LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length,
