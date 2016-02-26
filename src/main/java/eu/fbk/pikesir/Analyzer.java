@@ -12,14 +12,12 @@ import javax.xml.datatype.XMLGregorianCalendar;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Throwables;
-import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 
 import org.openrdf.model.Literal;
@@ -27,11 +25,9 @@ import org.openrdf.model.Resource;
 import org.openrdf.model.Statement;
 import org.openrdf.model.URI;
 import org.openrdf.model.Value;
-import org.openrdf.model.impl.StatementImpl;
 import org.openrdf.model.impl.URIImpl;
 import org.openrdf.model.vocabulary.RDF;
 import org.openrdf.model.vocabulary.RDFS;
-import org.openrdf.model.vocabulary.SKOS;
 import org.openrdf.model.vocabulary.XMLSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,33 +69,9 @@ public abstract class Analyzer {
         return NullAnalyzer.INSTANCE;
     }
 
-    public static Analyzer createStemAnalyzer(final String stemmerClass,
+    public static Analyzer createTextualAnalyzer(final String stemmerClass,
             @Nullable final Iterable<String> stopWords) {
-        return new StemAnalyzer(stemmerClass, stopWords);
-    }
-
-    public static Analyzer createURIAnalyzer() {
-        return URIAnalyzer.INSTANCE;
-    }
-
-    public static Analyzer createTypeAnalyzer() {
-        return TypeAnalyzer.INSTANCE;
-    }
-
-    public static Analyzer createPredicateAnalyzer() {
-        return PredicateAnalyzer.INSTANCE;
-    }
-
-    public static Analyzer createRoleAnalyzer() {
-        return RoleAnalyzer.INSTANCE;
-    }
-
-    public static Analyzer createConceptAnalyzer() {
-        return ConceptAnalyzer.INSTANCE;
-    }
-
-    public static Analyzer createTaxonomicAnalyzer(final double alpha) {
-        return new TaxonomicAnalyzer(alpha);
+        return new TextualAnalyzer(stemmerClass, stopWords);
     }
 
     public static Analyzer createSemanticAnalyzer(final boolean expandQueryTypes) {
@@ -115,44 +87,12 @@ public abstract class Analyzer {
         final List<Analyzer> analyzers = new ArrayList<>();
 
         // Add an analyzer extracting stems, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "stem", "false"))) {
-            final String stemmerClass = properties.getProperty(prefix + "stemmer");
-            final String stopwordsProp = properties.getProperty(prefix + "stopwords");
+        if (Boolean.parseBoolean(properties.getProperty(prefix + "textual", "false"))) {
+            final String stemmerClass = properties.getProperty(prefix + "textual.stemmer");
+            final String stopwordsProp = properties.getProperty(prefix + "textual.stopwords");
             final Set<String> stopwords = stopwordsProp == null ? null : ImmutableSet
                     .copyOf(stopwordsProp.split("\\s+"));
-            analyzers.add(createStemAnalyzer(stemmerClass, stopwords));
-        }
-
-        // Add a URI analyzer, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "uri", "false"))) {
-            analyzers.add(createURIAnalyzer());
-        }
-
-        // Add a type analyzer, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "type", "false"))) {
-            analyzers.add(createTypeAnalyzer());
-        }
-
-        // Add a predicate analyzer, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "predicate", "false"))) {
-            analyzers.add(createPredicateAnalyzer());
-        }
-
-        // Add a role analyzer, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "role", "false"))) {
-            analyzers.add(createRoleAnalyzer());
-        }
-
-        // Add a concept analyzer, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "concept", "false"))) {
-            analyzers.add(createConceptAnalyzer());
-        }
-
-        // Add a taxonomic analyzer, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "taxonomic", "false"))) {
-            final double alpha = Double.parseDouble(properties.getProperty(prefix
-                    + "taxonomic.alpha", "0.5"));
-            analyzers.add(createTaxonomicAnalyzer(alpha));
+            analyzers.add(createTextualAnalyzer(stemmerClass, stopwords));
         }
 
         // Add a semantic analyzer, if enabled
@@ -164,24 +104,6 @@ public abstract class Analyzer {
 
         // Combine the enrichers
         return concat(analyzers.toArray(new Analyzer[analyzers.size()]));
-    }
-
-    private static boolean isFrameBaseMicroframe(final URI uri) {
-        if (!uri.getNamespace().equals("http://framebase.org/ns/")) {
-            return false;
-        }
-        final String str = uri.getLocalName();
-        final int index = str.lastIndexOf('.');
-        if (index < 0) {
-            return false;
-        }
-        for (int i = index + 1; i < str.length(); ++i) {
-            final char ch = str.charAt(i);
-            if (ch < 'a' || ch > 'z') {
-                return false;
-            }
-        }
-        return true;
     }
 
     private static final class ConcatAnalyzer extends Analyzer {
@@ -218,7 +140,7 @@ public abstract class Analyzer {
 
     }
 
-    private static final class StemAnalyzer extends Analyzer {
+    private static final class TextualAnalyzer extends Analyzer {
 
         // Based on WordDelimiterFilter
 
@@ -265,7 +187,7 @@ public abstract class Analyzer {
         private final Set<String> stopWords;
 
         @SuppressWarnings({ "unchecked", "rawtypes" })
-        StemAnalyzer(@Nullable final String stemmerClass,
+        TextualAnalyzer(@Nullable final String stemmerClass,
                 @Nullable final Iterable<String> stopWords) {
             try {
                 this.stemmerClass = (Class) Class.forName("org.tartarus.snowball.ext."
@@ -291,7 +213,7 @@ public abstract class Analyzer {
                             stemmer.setCurrent(subWord.toLowerCase());
                             stemmer.stem();
                             final String subWordStem = stemmer.getCurrent();
-                            builder.addTerm(Field.STEM, subWordStem);
+                            builder.addTerm(Field.TEXTUAL, subWordStem);
                             // builder.addTerm(Field.ALL, "stem:" + subWordStem);
                         } catch (final InstantiationException | IllegalAccessException ex) {
                             Throwables.propagate(ex);
@@ -378,351 +300,6 @@ public abstract class Analyzer {
 
     }
 
-    private static final class URIAnalyzer extends Analyzer {
-
-        static final URIAnalyzer INSTANCE = new URIAnalyzer();
-
-        private static final URI ENTITY_CLASS = new URIImpl(
-                "http://dkm.fbk.eu/ontologies/knowledgestore#Entity");
-
-        @Override
-        public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final boolean isQuery) {
-            for (final Resource entity : model.filter(null, RDF.TYPE, ENTITY_CLASS).subjects()) {
-                if (entity instanceof URI) {
-                    final URI uri = (URI) entity;
-                    if (uri.getNamespace().equals("http://dbpedia.org/resource/")) {
-                        builder.addTerm(Field.URI, uri.getLocalName());
-                    }
-                }
-            }
-        }
-
-    }
-
-    private static final class TypeAnalyzer extends Analyzer {
-
-        static final TypeAnalyzer INSTANCE = new TypeAnalyzer();
-
-        private static final Map<String, Field> TYPE_MAP = ImmutableMap.of( //
-                "http://dbpedia.org/class/yago/", Field.TYPE_YAGO, //
-                "http://www.ontologyportal.org/SUMO.owl#", Field.TYPE_SUMO);
-
-        @Override
-        public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final boolean isQuery) {
-
-            final Multimap<Field, Statement> stmts = HashMultimap.create();
-            for (final Statement stmt : model.filter(null, RDF.TYPE, null)) {
-                if (stmt.getObject() instanceof URI) {
-                    final URI type = (URI) stmt.getObject();
-                    final Field field = TYPE_MAP.get(type.getNamespace());
-                    if (field != null) {
-                        stmts.put(field, stmt);
-                    }
-                }
-            }
-
-            if (isQuery) {
-                final Map<URI, List<URI>> parentMap = Maps.newHashMap();
-                for (final Field field : stmts.keySet()) {
-                    for (final Statement stmt : ImmutableList.copyOf(stmts.get(field))) {
-                        final URI type = (URI) stmt.getObject();
-                        List<URI> parentTypes = parentMap.get(type);
-                        if (parentTypes == null) {
-                            parentTypes = Lists.newArrayList();
-                            parentMap.put(type, parentTypes);
-                            for (final Value parentType : model
-                                    .filter(type, RDFS.SUBCLASSOF, null).objects()) {
-                                if (parentType instanceof URI && !parentType.equals(type)) {
-                                    parentTypes.add((URI) parentType);
-                                }
-                            }
-                        }
-                        for (final URI parentType : parentTypes) {
-                            stmts.remove(field, new StatementImpl(stmt.getSubject(), RDF.TYPE,
-                                    parentType));
-                        }
-                    }
-                }
-            }
-
-            for (final Field field : stmts.keySet()) {
-                for (final Statement stmt : stmts.get(field)) {
-                    builder.addTerm(field, ((URI) stmt.getObject()).getLocalName());
-                }
-            }
-        }
-
-    }
-
-    private static final class PredicateAnalyzer extends Analyzer {
-
-        static final PredicateAnalyzer INSTANCE = new PredicateAnalyzer();
-
-        private static final Map<String, Field> PREDICATE_MAP = ImmutableMap.of( //
-                "http://framebase.org/ns/", Field.PREDICATE_FRB, //
-                "http://www.newsreader-project.eu/ontologies/propbank/", Field.PREDICATE_PB, //
-                "http://www.newsreader-project.eu/ontologies/nombank/", Field.PREDICATE_NB);
-
-        @Override
-        public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final boolean isQuery) {
-
-            final Multimap<Field, Statement> stmts = HashMultimap.create();
-            for (final Statement stmt : model.filter(null, RDF.TYPE, null)) {
-                if (stmt.getObject() instanceof URI) {
-                    final URI type = (URI) stmt.getObject();
-                    final Field field = PREDICATE_MAP.get(type.getNamespace());
-                    if (field != null) {
-                        stmts.put(field, stmt);
-                    }
-                }
-            }
-
-            if (isQuery) {
-                final Map<URI, List<URI>> parentMap = Maps.newHashMap();
-                for (final Field field : stmts.keySet()) {
-                    for (final Statement stmt : ImmutableList.copyOf(stmts.get(field))) {
-                        final URI type = (URI) stmt.getObject();
-                        if (!isFrameBaseMicroframe(type)) {
-                            List<URI> parentTypes = parentMap.get(type);
-                            if (parentTypes == null) {
-                                parentTypes = Lists.newArrayList();
-                                parentMap.put(type, parentTypes);
-                                for (final Value parentType : model.filter(type, RDFS.SUBCLASSOF,
-                                        null).objects()) {
-                                    if (parentType instanceof URI && !parentType.equals(type)) {
-                                        parentTypes.add((URI) parentType);
-                                    }
-                                }
-                            }
-                            for (final URI parentType : parentTypes) {
-                                stmts.remove(field, new StatementImpl(stmt.getSubject(), RDF.TYPE,
-                                        parentType));
-                            }
-                        }
-                    }
-                }
-            }
-
-            for (final Field field : stmts.keySet()) {
-                for (final Statement stmt : stmts.get(field)) {
-                    builder.addTerm(field, ((URI) stmt.getObject()).getLocalName());
-                }
-            }
-        }
-
-    }
-
-    private static final class RoleAnalyzer extends Analyzer {
-
-        static final RoleAnalyzer INSTANCE = new RoleAnalyzer();
-
-        private static final Map<String, Field> ROLE_MAP = ImmutableMap.of( //
-                "http://framebase.org/ns/", Field.ROLE_FRB, //
-                "http://www.newsreader-project.eu/ontologies/propbank/", Field.ROLE_PB, //
-                "http://www.newsreader-project.eu/ontologies/nombank/", Field.ROLE_NB);
-
-        @Override
-        public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final boolean isQuery) {
-
-            final Multimap<Field, Statement> stmts = HashMultimap.create();
-            for (final Statement stmt : model) {
-                final String ns = stmt.getPredicate().getNamespace();
-                final Field field = ROLE_MAP.get(ns);
-                if (field != null) {
-                    stmts.put(field, stmt);
-                }
-            }
-
-            if (isQuery) {
-                final Map<URI, List<URI>> parentMap = Maps.newHashMap();
-                for (final Field field : stmts.keySet()) {
-                    for (final Statement stmt : ImmutableList.copyOf(stmts.get(field))) {
-                        final URI pred = stmt.getPredicate();
-                        List<URI> parentPreds = parentMap.get(pred);
-                        if (parentPreds == null) {
-                            parentPreds = Lists.newArrayList();
-                            parentMap.put(pred, parentPreds);
-                            for (final Value parentPred : model.filter(pred, RDFS.SUBPROPERTYOF,
-                                    null).objects()) {
-                                if (parentPred instanceof URI && !parentPred.equals(pred)) {
-                                    parentPreds.add((URI) parentPred);
-                                }
-                            }
-                        }
-                        for (final URI parentPred : parentPreds) {
-                            stmts.remove(field, new StatementImpl(stmt.getSubject(), parentPred,
-                                    stmt.getObject()));
-                        }
-                    }
-                }
-            }
-
-            for (final Field field : stmts.keySet()) {
-                for (final Statement stmt : stmts.get(field)) {
-                    builder.addTerm(field, stmt.getPredicate().getLocalName());
-                }
-            }
-        }
-
-    }
-
-    private static final class ConceptAnalyzer extends Analyzer {
-
-        static final ConceptAnalyzer INSTANCE = new ConceptAnalyzer();
-
-        private static final Map<String, String> CONCEPT_MAP = ImmutableMap.of( //
-                "http://dbpedia.org/class/yago/", "dbyago", //
-                "http://framebase.org/ns/", "frb", //
-                "http://dbpedia.org/resource/", "dbpedia", //
-                "entity:", "entity");
-
-        private static final URI ENTITY_CLASS = new URIImpl(
-                "http://dkm.fbk.eu/ontologies/knowledgestore#Entity");
-
-        @Override
-        public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final boolean isQuery) {
-
-            for (final Resource entity : model.filter(null, RDF.TYPE, ENTITY_CLASS).subjects()) {
-
-                final Set<URI> concepts = Sets.newHashSet();
-                final List<URI> queue = Lists.newLinkedList();
-
-                for (final Value type : model.filter(entity, RDF.TYPE, null).objects()) {
-                    if (type instanceof URI
-                            && CONCEPT_MAP.containsKey(((URI) type).getNamespace())) {
-                        concepts.add((URI) type);
-                    }
-                }
-                for (final URI type : ImmutableList.copyOf(concepts)) {
-                    if (!isFrameBaseMicroframe(type)) {
-                        final Set<Value> parents = Sets.newHashSet(model.filter(type,
-                                RDFS.SUBCLASSOF, null).objects());
-                        parents.remove(type);
-                        concepts.removeAll(parents);
-                    }
-                }
-
-                if (entity instanceof URI
-                        && ((URI) entity).getNamespace().equals("http://dbpedia.org/resource/")) {
-                    concepts.add((URI) entity);
-                }
-
-                if (!isQuery) {
-                    queue.addAll(concepts);
-                    while (!queue.isEmpty()) {
-                        final URI uri = queue.remove(0);
-                        for (final Value parent : model.filter(uri, SKOS.BROADER, null).objects()) {
-                            if (parent instanceof URI) {
-                                final URI parentURI = (URI) parent;
-                                if (CONCEPT_MAP.containsKey(parentURI.getNamespace())
-                                        && !concepts.contains(parentURI)) {
-                                    concepts.add(parentURI);
-                                    queue.add(parentURI);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                for (final URI concept : concepts) {
-                    final String prefix = CONCEPT_MAP.get(concept.getNamespace());
-                    final String name = prefix + ":" + concept.getLocalName();
-                    builder.addTerm(Field.CONCEPT, name);
-                }
-            }
-        }
-
-    }
-
-    private static final class TaxonomicAnalyzer extends Analyzer {
-
-        private static final URI ENTITY_CLASS = new URIImpl(
-                "http://dkm.fbk.eu/ontologies/knowledgestore#Entity");
-
-        private static final URI DENOTED_BY = new URIImpl(
-                "http://groundedannotationframework.org/gaf#denotedBy");
-
-        private static final Set<String> TYPE_SET = ImmutableSet.of( //
-                "http://dbpedia.org/class/yago/");
-
-        private final double entityCoeff;
-
-        private final double typeCoeff;
-
-        TaxonomicAnalyzer(final double alpha) {
-            final double den = Math.sqrt(alpha * alpha + (1.0 - alpha) * (1.0 - alpha));
-            this.entityCoeff = alpha / den;
-            this.typeCoeff = (1.0 - alpha) / den;
-        }
-
-        @Override
-        public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final boolean isQuery) {
-
-            final List<Resource> entities = ImmutableList.copyOf(model.filter(null, RDF.TYPE,
-                    ENTITY_CLASS).subjects());
-
-            double factor = 0.0;
-            final Map<Resource, Integer> mentionCounts = Maps.newHashMap();
-            for (final Resource entity : entities) {
-                final int mentionCount = model.filter(entity, DENOTED_BY, null).size();
-                mentionCounts.put(entity, mentionCount);
-                factor += mentionCount * mentionCount;
-            }
-            factor = 1.0 / Math.sqrt(factor);
-
-            for (final Resource entity : model.filter(null, RDF.TYPE, ENTITY_CLASS).subjects()) {
-                if (entity instanceof URI
-                        && ((URI) entity).getNamespace().equals("http://dbpedia.org/resource/")) {
-
-                    // Obtain number of mentions for current entity
-                    final int mentionCount = mentionCounts.get(entity);
-
-                    // Obtain entity types
-                    final List<URI> types = Lists.newArrayList();
-                    for (final Value type : model.filter(entity, RDF.TYPE, null).objects()) {
-                        if (type instanceof URI && TYPE_SET.contains(((URI) type).getNamespace())) {
-                            types.add((URI) type);
-                        }
-                    }
-
-                    // Compute type weights
-                    final double[] typeWeights = new double[types.size()];
-                    double den = 0.0;
-                    for (int i = 0; i < types.size(); ++i) {
-                        final double weight = entityTypeWeight((URI) entity, types.get(i));
-                        typeWeights[i] = this.typeCoeff * weight;
-                        den += weight * weight;
-                    }
-                    den = Math.sqrt(den);
-                    for (int i = 0; i < types.size(); ++i) {
-                        typeWeights[i] /= den;
-                    }
-
-                    // Add entity term
-                    builder.addTerm(Field.TAXONOMIC, "entity:" + ((URI) entity).getLocalName(),
-                            this.entityCoeff * mentionCount * factor);
-
-                    // Add type terms
-                    for (int i = 0; i < types.size(); ++i) {
-                        builder.addTerm(Field.TAXONOMIC, "class:" + types.get(i).getLocalName(),
-                                typeWeights[i] * mentionCount * factor);
-                    }
-                }
-            }
-        }
-
-        private double entityTypeWeight(final URI entity, final URI type) {
-            return 1.0;
-        }
-
-    }
-
     private static final class SemanticAnalyzer extends Analyzer {
 
         private static final URI ENTITY_CLASS = new URIImpl(
@@ -735,21 +312,22 @@ public abstract class Analyzer {
                 "http://www.w3.org/TR/owl-time#hasDateTimeDescription");
 
         private static final Map<String, Field> TYPE_MAP = ImmutableMap.of( //
-                "http://dbpedia.org/class/yago/", Field.TYPE_YAGO //
+                "http://dbpedia.org/class/yago/", Field.TYPE //
                 // "http://www.ontologyportal.org/SUMO.owl#", Field.TYPE_SUMO, //
                 );
 
-        private static final Map<String, Field> PREDICATE_MAP = ImmutableMap.of( //
-                "http://framebase.org/ns/", Field.PREDICATE_FRB //
-                // "http://framebase.org/ns/", Field.PREDICATE_FRB //
-                //"http://www.newsreader-project.eu/ontologies/propbank/", Field.PREDICATE_PB, //
-                //"http://www.newsreader-project.eu/ontologies/nombank/", Field.PREDICATE_NB
+        // TODO: check below inclusion / exclusion of FrameBase / NB / PB
+        
+        private static final Set<String> FRAME_PREDICATE_NAMESPACES = ImmutableSet.of( //
+                "http://framebase.org/ns/" 
+                //"http://www.newsreader-project.eu/ontologies/propbank/", //
+                //"http://www.newsreader-project.eu/ontologies/nombank/",
                 );
 
-        private static final Map<String, Field> ROLE_MAP = ImmutableMap.of( //
-                "http://framebase.org/ns/", Field.ROLE_FRB, //
-                "http://www.newsreader-project.eu/ontologies/propbank/", Field.ROLE_PB, //
-                "http://www.newsreader-project.eu/ontologies/nombank/", Field.ROLE_NB);
+        private static final Set<String> FRAME_ROLE_NAMESPACES = ImmutableSet.of( //
+                "http://framebase.org/ns/", //
+                "http://www.newsreader-project.eu/ontologies/propbank/", //
+                "http://www.newsreader-project.eu/ontologies/nombank/");
 
         private final boolean expandQueryTypes;
 
@@ -777,7 +355,7 @@ public abstract class Analyzer {
                         final String ns = uri.getNamespace();
                         if (TYPE_MAP.containsKey(ns)) {
                             types.add(uri);
-                        } else if (PREDICATE_MAP.containsKey(ns)) {
+                        } else if (FRAME_PREDICATE_NAMESPACES.contains(ns)) {
                             predicates.add(uri);
                         }
                     }
@@ -786,7 +364,7 @@ public abstract class Analyzer {
                 // Obtain role properties
                 final Set<URI> roles = Sets.newHashSet();
                 for (final Statement stmt : model.filter(entity, null, null)) {
-                    if (ROLE_MAP.containsKey(stmt.getPredicate().getNamespace())) {
+                    if (FRAME_ROLE_NAMESPACES.contains(stmt.getPredicate().getNamespace())) {
                         roles.add(stmt.getPredicate());
                     }
                 }

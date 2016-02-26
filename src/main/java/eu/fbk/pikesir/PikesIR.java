@@ -485,6 +485,7 @@ public class PikesIR {
                             }
                         } else {
                             doc.add(new TextField(fieldID, fieldValue, Store.YES));
+                            throw new Error(); // TODO
                         }
                         ++numTerms;
                     }

@@ -6,29 +6,11 @@ import com.google.common.collect.ImmutableMap;
 
 public enum Field {
 
-    STEM("stem.subword"),
+    TEXTUAL("textual"),
 
-    URI("uri.dbpedia"),
+    URI("uri"),
 
-    TYPE_YAGO("type.yago"),
-
-    TYPE_SUMO("type.sumo"),
-
-    PREDICATE_FRB("predicate.frb"),
-
-    PREDICATE_PB("predicate.pb"),
-
-    PREDICATE_NB("predicate.nb"),
-
-    ROLE_FRB("role.frb"),
-
-    ROLE_PB("role.pb"),
-
-    ROLE_NB("role.nb"),
-
-    CONCEPT("concept"),
-
-    TAXONOMIC("taxonomic"),
+    TYPE("type"),
 
     FRAME("frame"),
 

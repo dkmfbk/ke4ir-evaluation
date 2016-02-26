@@ -6,11 +6,13 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 import java.util.logging.LogManager;
 
 import javax.annotation.Nullable;
@@ -22,6 +24,8 @@ import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.ImmutableBiMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
@@ -51,10 +55,11 @@ import eu.fbk.rdfpro.RDFHandlers;
 import eu.fbk.rdfpro.RDFProcessors;
 import eu.fbk.rdfpro.RDFSources;
 import eu.fbk.rdfpro.Reducer;
+import eu.fbk.rdfpro.util.QuadModel;
 import eu.fbk.rdfpro.util.StatementComponent;
 import eu.fbk.rdfpro.util.Statements;
 
-public final class KeyQuadIndex implements KeyQuadSource, Closeable {
+public final class KeyQuadIndex implements Closeable {
 
     private static final byte[] NS_KEY = new byte[] {};
 
@@ -118,7 +123,13 @@ public final class KeyQuadIndex implements KeyQuadSource, Closeable {
         }
     }
 
-    @Override
+    public QuadModel get(final Value key) {
+        Objects.requireNonNull(key);
+        final QuadModel model = QuadModel.create();
+        get(key, model);
+        return model;
+    }
+
     public boolean get(final Value key, final RDFHandler handler) throws RDFHandlerException {
         try {
             final byte[] keyBytes = write(this.nsMap, new ByteArrayOutputStream(), key)
@@ -135,6 +146,103 @@ public final class KeyQuadIndex implements KeyQuadSource, Closeable {
             }
         } catch (final IOException ex) {
             throw Throwables.propagate(ex);
+        }
+    }
+
+    public boolean get(final Value key, final Collection<Statement> model) {
+        Objects.requireNonNull(key);
+        Objects.requireNonNull(model);
+        try {
+            return get(key, RDFHandlers.wrap(model));
+        } catch (final RDFHandlerException ex) {
+            throw new Error(ex);
+        }
+    }
+
+    public QuadModel getAll(final Iterable<? extends Value> keys) {
+        Objects.requireNonNull(keys);
+        final QuadModel model = QuadModel.create();
+        getAll(keys, model);
+        return model;
+    }
+
+    public int getAll(final Iterable<? extends Value> keys, final RDFHandler handler)
+            throws RDFHandlerException {
+        Objects.requireNonNull(keys);
+        Objects.requireNonNull(handler);
+        int result = 0;
+        for (final Value key : keys instanceof Set ? keys : ImmutableSet.copyOf(keys)) {
+            final boolean found = get(key, handler);
+            result += found ? 1 : 0;
+        }
+        return result;
+    }
+
+    public int getAll(final Iterable<? extends Value> keys, final Collection<Statement> model) {
+        Objects.requireNonNull(keys);
+        Objects.requireNonNull(model);
+        try {
+            return getAll(keys, RDFHandlers.wrap(model));
+        } catch (final RDFHandlerException ex) {
+            throw new Error(ex);
+        }
+    }
+
+    public QuadModel getRecursive(final Iterable<? extends Value> keys,
+            @Nullable final Predicate<Value> matcher) {
+        Objects.requireNonNull(keys);
+        final QuadModel model = QuadModel.create();
+        getRecursive(keys, matcher, model);
+        return model;
+    }
+
+    public int getRecursive(final Iterable<? extends Value> keys,
+            @Nullable final Predicate<Value> matcher, final RDFHandler handler)
+            throws RDFHandlerException {
+
+        Objects.requireNonNull(keys);
+
+        final Set<Value> visited = Sets.newHashSet();
+        final List<Value> queue = Lists.newLinkedList(keys);
+
+        final RDFHandler sink = new AbstractRDFHandlerWrapper(handler) {
+
+            @Override
+            public void handleStatement(final Statement stmt) throws RDFHandlerException {
+                super.handleStatement(stmt);
+                enqueueIfMatches(stmt.getSubject());
+                enqueueIfMatches(stmt.getPredicate());
+                enqueueIfMatches(stmt.getObject());
+                enqueueIfMatches(stmt.getContext());
+            }
+
+            private void enqueueIfMatches(@Nullable final Value value) {
+                if (value != null && (matcher == null || matcher.test(value))) {
+                    queue.add(value);
+                }
+            }
+
+        };
+
+        int result = 0;
+        while (!queue.isEmpty()) {
+            final Value key = queue.remove(0);
+            if (visited.add(key)) {
+                final boolean found = get(key, sink);
+                result += found ? 1 : 0;
+            }
+        }
+        return result;
+    }
+
+    public int getRecursive(final Iterable<? extends Value> keys,
+            @Nullable final Predicate<Value> matcher, final Collection<Statement> model) {
+        Objects.requireNonNull(keys);
+        Objects.requireNonNull(model);
+        try {
+            return getRecursive(keys, matcher, RDFHandlers.wrap(model));
+        } catch (final RDFHandlerException ex) {
+            throw new Error(ex);
         }
     }
 
