@@ -214,7 +214,6 @@ public abstract class Analyzer {
                             stemmer.stem();
                             final String subWordStem = stemmer.getCurrent();
                             builder.addTerm(Field.TEXTUAL, subWordStem);
-                            // builder.addTerm(Field.ALL, "stem:" + subWordStem);
                         } catch (final InstantiationException | IllegalAccessException ex) {
                             Throwables.propagate(ex);
                         }
@@ -317,9 +316,9 @@ public abstract class Analyzer {
                 );
 
         // TODO: check below inclusion / exclusion of FrameBase / NB / PB
-        
+
         private static final Set<String> FRAME_PREDICATE_NAMESPACES = ImmutableSet.of( //
-                "http://framebase.org/ns/" 
+                "http://framebase.org/ns/"
                 //"http://www.newsreader-project.eu/ontologies/propbank/", //
                 //"http://www.newsreader-project.eu/ontologies/nombank/",
                 );

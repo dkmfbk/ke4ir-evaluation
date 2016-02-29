@@ -449,7 +449,6 @@ public class PikesIR {
                 for (final Field field : Field.values()) {
                     final String fieldID = field.getID();
                     for (final Term term : docVector.getTerms(field)) {
-                        // final String fieldValue = "|" + term.getWeight() + "| " + term.getValue();
                         final String fieldValue = term.getValue();
                         for (int i = 0; i < (int) Math.ceil(term.getWeight()); ++i) {
                             doc.add(new TextField(fieldID, fieldValue, Store.YES));

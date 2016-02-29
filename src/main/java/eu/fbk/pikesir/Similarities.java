@@ -9,9 +9,8 @@ import org.apache.lucene.search.similarities.Similarity;
 
 public class Similarities {
 
-    public static Similarity createTfIdfSimilarity(final boolean enableCoord,
-            final boolean enableNorm, final boolean enableQNorm) {
-        return new TfIdfSimilarity(enableCoord, enableNorm, enableQNorm);
+    public static Similarity createTfIdfSimilarity() {
+        return new TfIdfSimilarity();
     }
 
     public static Similarity create(final Path root, final Properties properties, String prefix) {
@@ -21,13 +20,7 @@ public class Similarities {
 
         // Create a TfIdf similarity, if enabled
         if (Boolean.parseBoolean(properties.getProperty(prefix + "tfidf", "false"))) {
-            final boolean enableCoord = Boolean.parseBoolean( //
-                    properties.getProperty(prefix + "tfidf.coord", "false"));
-            final boolean enableNorm = Boolean.parseBoolean( //
-                    properties.getProperty(prefix + "tfidf.norm", "false"));
-            final boolean enableQNorm = Boolean.parseBoolean( //
-                    properties.getProperty(prefix + "tfidf.qnorm", "false"));
-            return createTfIdfSimilarity(enableCoord, enableNorm, enableQNorm);
+            return createTfIdfSimilarity();
         }
 
         // Otherwise return default similarity
@@ -35,19 +28,6 @@ public class Similarities {
     }
 
     private static class TfIdfSimilarity extends ClassicSimilarity {
-
-        private final boolean enableCoord;
-
-        private final boolean enableNorm;
-
-        private final boolean enableQNorm;
-
-        TfIdfSimilarity(final boolean enableCoord, final boolean enableNorm,
-                final boolean enableQNorm) {
-            this.enableCoord = enableCoord;
-            this.enableNorm = enableNorm;
-            this.enableQNorm = enableQNorm;
-        }
 
         @Override
         public float idf(final long docFreq, final long numDocs) {
@@ -74,23 +54,22 @@ public class Similarities {
 
         @Override
         public float queryNorm(final float sumOfSquaredWeights) {
-            return this.enableQNorm ? super.queryNorm(sumOfSquaredWeights) : 1.0f;
+            return 1.0f;
         }
 
         @Override
         public float coord(final int overlap, final int maxOverlap) {
-            return this.enableCoord ? super.coord(overlap, maxOverlap) : 1.0f;
+            return 1.0f;
         }
 
         @Override
         public float lengthNorm(final FieldInvertState state) {
-            return this.enableNorm ? super.lengthNorm(state) : 1.0f;
+            return 1.0f;
         }
 
         @Override
         public String toString() {
-            return getClass().getSimpleName() + "(coord: " + this.enableCoord + ", norm: "
-                    + this.enableNorm + ")";
+            return getClass().getSimpleName();
         }
 
     }
