@@ -91,6 +91,9 @@ public abstract class Ranker {
 
                 for (int i = 0; i < docVectors.length; ++i) {
 
+                    Preconditions.checkNotNull(docVectors[i]);
+                    Preconditions.checkNotNull(queryTerm);
+
                     final Term docTerm = docVectors[i].getTerm(layer, queryTerm.getValue());
                     if (docTerm == null) {
                         continue;
