@@ -1,4 +1,4 @@
-package eu.fbk.pikesir;
+package eu.fbk.pikesir.util;
 
 import java.io.Serializable;
 import java.nio.file.Files;
@@ -17,8 +17,6 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Ordering;
-
-import eu.fbk.pikesir.util.CommandLine;
 
 public class RankingScore implements Serializable {
 

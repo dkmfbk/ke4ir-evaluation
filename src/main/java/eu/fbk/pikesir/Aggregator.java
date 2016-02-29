@@ -142,6 +142,8 @@ public abstract class Aggregator {
                 }
             }
 
+            // FIXME
+
             final double semanticScore = semanticWeight == 0.0 ? 0.0 : semanticSum
                     / semanticWeight;
 

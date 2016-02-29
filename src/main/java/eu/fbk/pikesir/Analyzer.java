@@ -3,7 +3,6 @@ package eu.fbk.pikesir;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 
@@ -13,11 +12,9 @@ import javax.xml.datatype.XMLGregorianCalendar;
 import com.google.common.base.Joiner;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 
 import org.openrdf.model.Literal;
@@ -27,7 +24,6 @@ import org.openrdf.model.URI;
 import org.openrdf.model.Value;
 import org.openrdf.model.impl.URIImpl;
 import org.openrdf.model.vocabulary.RDF;
-import org.openrdf.model.vocabulary.RDFS;
 import org.openrdf.model.vocabulary.XMLSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,8 +43,7 @@ public abstract class Analyzer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(Analyzer.class);
 
-    public abstract void analyze(KAFDocument document, QuadModel model,
-            TermVector.Builder builder, boolean isQuery);
+    public abstract void analyze(KAFDocument document, QuadModel model, TermVector.Builder builder);
 
     @Override
     public String toString() {
@@ -74,8 +69,8 @@ public abstract class Analyzer {
         return new TextualAnalyzer(stemmerClass, stopWords);
     }
 
-    public static Analyzer createSemanticAnalyzer(final boolean expandQueryTypes) {
-        return new SemanticAnalyzer(expandQueryTypes);
+    public static Analyzer createSemanticAnalyzer() {
+        return new SemanticAnalyzer();
     }
 
     public static Analyzer create(final Path root, final Properties properties, String prefix) {
@@ -97,9 +92,7 @@ public abstract class Analyzer {
 
         // Add a semantic analyzer, if enabled
         if (Boolean.parseBoolean(properties.getProperty(prefix + "semantic", "false"))) {
-            final boolean expandQueryTypes = Boolean.parseBoolean(properties.getProperty(prefix
-                    + "semantic.expandQueryTypes", "false"));
-            analyzers.add(createSemanticAnalyzer(expandQueryTypes));
+            analyzers.add(createSemanticAnalyzer());
         }
 
         // Combine the enrichers
@@ -116,9 +109,9 @@ public abstract class Analyzer {
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final boolean isQuery) {
+                final Builder builder) {
             for (final Analyzer analyzer : this.analyzers) {
-                analyzer.analyze(document, model, builder, isQuery);
+                analyzer.analyze(document, model, builder);
             }
         }
 
@@ -135,7 +128,7 @@ public abstract class Analyzer {
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final boolean isQuery) {
+                final Builder builder) {
         }
 
     }
@@ -201,7 +194,7 @@ public abstract class Analyzer {
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final boolean isQuery) {
+                final Builder builder) {
 
             // Iterate over all the tokens in the document
             for (final ixa.kaflib.Term term : document.getTerms()) {
@@ -213,7 +206,7 @@ public abstract class Analyzer {
                             stemmer.setCurrent(subWord.toLowerCase());
                             stemmer.stem();
                             final String subWordStem = stemmer.getCurrent();
-                            builder.addTerm(Field.TEXTUAL, subWordStem);
+                            builder.addTerm("textual", subWordStem);
                         } catch (final InstantiationException | IllegalAccessException ex) {
                             Throwables.propagate(ex);
                         }
@@ -310,9 +303,9 @@ public abstract class Analyzer {
         private static final URI HAS_DATE_TIME_DESCRIPTION = new URIImpl(
                 "http://www.w3.org/TR/owl-time#hasDateTimeDescription");
 
-        private static final Map<String, Field> TYPE_MAP = ImmutableMap.of( //
-                "http://dbpedia.org/class/yago/", Field.TYPE //
-                // "http://www.ontologyportal.org/SUMO.owl#", Field.TYPE_SUMO, //
+        private static final Set<String> TYPE_NAMESPACES = ImmutableSet.of( //
+                "http://dbpedia.org/class/yago/" //
+                // "http://www.ontologyportal.org/SUMO.owl#" //
                 );
 
         // TODO: check below inclusion / exclusion of FrameBase / NB / PB
@@ -328,17 +321,9 @@ public abstract class Analyzer {
                 "http://www.newsreader-project.eu/ontologies/propbank/", //
                 "http://www.newsreader-project.eu/ontologies/nombank/");
 
-        private final boolean expandQueryTypes;
-
-        SemanticAnalyzer(final boolean expandQueryTypes) {
-            this.expandQueryTypes = expandQueryTypes;
-        }
-
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final boolean isQuery) {
-
-            final Map<URI, List<URI>> parentMap = Maps.newHashMap();
+                final Builder builder) {
 
             for (final Resource entity : model.filter(null, RDF.TYPE, ENTITY_CLASS).subjects()) {
 
@@ -352,7 +337,7 @@ public abstract class Analyzer {
                     if (value instanceof URI) {
                         final URI uri = (URI) value;
                         final String ns = uri.getNamespace();
-                        if (TYPE_MAP.containsKey(ns)) {
+                        if (TYPE_NAMESPACES.contains(ns)) {
                             types.add(uri);
                         } else if (FRAME_PREDICATE_NAMESPACES.contains(ns)) {
                             predicates.add(uri);
@@ -416,20 +401,13 @@ public abstract class Analyzer {
                 }
 
                 // Emit frame terms
-                final double frameWeight = isQuery ? (double) numMentions
-                        / (participants.size() * predicates.size()) : numMentions;
+                final double frameWeight = (double) numMentions
+                        / (participants.size() * predicates.size());
                 for (final URI participant : participants) {
                     for (final URI predicate : predicates) {
                         final String id = predicate.getLocalName() + "__"
                                 + participant.getLocalName();
-                        builder.addTerm(Field.FRAME, id, frameWeight);
-                    }
-                }
-
-                // Remove inherited types and roles, if necessary
-                if (!this.expandQueryTypes && isQuery) {
-                    for (final URI type : ImmutableList.copyOf(types)) {
-                        types.removeAll(getParents(type, parentMap, RDFS.SUBCLASSOF, model));
+                        builder.addTerm("frame", id, numMentions, frameWeight);
                     }
                 }
 
@@ -437,48 +415,25 @@ public abstract class Analyzer {
                 if (entity instanceof URI) {
                     final URI uri = (URI) entity;
                     if (uri.getNamespace().equals("http://dbpedia.org/resource/")) {
-                        builder.addTerm(Field.URI, uri.getLocalName(), numMentions);
+                        builder.addTerm("uri", uri.getLocalName(), numMentions, numMentions);
                     }
                 }
 
                 // Emit type terms
                 for (final URI type : types) {
-                    final Field field = TYPE_MAP.get(type.getNamespace());
-                    final double weight = isQuery ? (double) numMentions / types.size()
-                            : numMentions;
-                    builder.addTerm(field, type.getLocalName(), weight);
+                    final double weight = (double) numMentions / types.size();
+                    builder.addTerm("type", type.getLocalName(), numMentions, weight);
                 }
 
                 // Emit time components
                 if (!times.isEmpty()) {
-                    if (isQuery) {
-                        final Set<String> set = ImmutableSet.copyOf(times);
-                        final double weight = (double) numMentions / set.size();
-                        for (final String element : set) {
-                            builder.addTerm(Field.TIME, element, weight);
-                        }
-                    } else {
-                        for (final String element : ImmutableSet.copyOf(times)) {
-                            builder.addTerm(Field.TIME, element, numMentions);
-                        }
+                    final Set<String> set = ImmutableSet.copyOf(times);
+                    final double weight = (double) numMentions / set.size();
+                    for (final String element : set) {
+                        builder.addTerm("time", element, numMentions, weight);
                     }
                 }
             }
-        }
-
-        private static List<URI> getParents(final URI uri, final Map<URI, List<URI>> parentMap,
-                final URI parentProperty, final QuadModel model) {
-            List<URI> parents = parentMap.get(uri);
-            if (parents == null) {
-                parents = Lists.newArrayList();
-                parentMap.put(uri, parents);
-                for (final Value parent : model.filter(uri, parentProperty, null).objects()) {
-                    if (parent instanceof URI && !parent.equals(uri)) {
-                        parents.add((URI) parent);
-                    }
-                }
-            }
-            return parents;
         }
 
         private static void getDateComponents(final Literal literal, final List<String> centuries,

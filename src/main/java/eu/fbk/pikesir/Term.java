@@ -2,39 +2,44 @@ package eu.fbk.pikesir;
 
 import java.util.Objects;
 
-import com.google.common.base.Preconditions;
-
 public final class Term implements Comparable<Term> {
 
-    private final Field field;
+    private final String field;
 
     private final String value;
 
+    private final int frequency;
+
     private final double weight;
 
-    private Term(final Field field, final String value, final double weight) {
+    private Term(final String field, final String value, final int frequency, final double weight) {
         this.field = field;
         this.value = value;
+        this.frequency = frequency;
         this.weight = weight;
     }
 
-    public static Term create(final Field field, final String value) {
-        return create(field, value, 1.0);
+    public static Term create(final String field, final String value) {
+        return create(field, value, 1, 1.0);
     }
 
-    public static Term create(final Field field, final String value, final double weight) {
+    public static Term create(final String field, final String value, final int frequency,
+            final double weight) {
         Objects.requireNonNull(field);
         Objects.requireNonNull(value);
-        Preconditions.checkArgument(weight != 0.0);
-        return new Term(field, value, weight);
+        return new Term(field, value, frequency, weight);
     }
 
-    public Field getField() {
+    public String getField() {
         return this.field;
     }
 
     public String getValue() {
         return this.value;
+    }
+
+    public int getFrequency() {
+        return this.frequency;
     }
 
     public double getWeight() {
@@ -69,8 +74,8 @@ public final class Term implements Comparable<Term> {
 
     @Override
     public String toString() {
-        return this.field + ": " + this.value
-                + (this.weight == 1.0 ? "" : "/" + String.format("%.2f", this.weight));
+        return this.field + ": " + this.value + "/" + this.frequency + "/"
+                + String.format("%.2f", this.weight);
     }
 
 }

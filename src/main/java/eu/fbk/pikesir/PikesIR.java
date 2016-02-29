@@ -28,14 +28,12 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
-import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Multimap;
 import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
@@ -50,11 +48,14 @@ import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.index.TermContext;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
+import org.apache.lucene.search.CollectionStatistics;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TermStatistics;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.FSDirectory;
@@ -66,6 +67,7 @@ import org.slf4j.LoggerFactory;
 import ixa.kaflib.KAFDocument;
 
 import eu.fbk.pikesir.util.CommandLine;
+import eu.fbk.pikesir.util.RankingScore;
 import eu.fbk.rdfpro.AbstractRDFHandlerWrapper;
 import eu.fbk.rdfpro.RDFHandlers;
 import eu.fbk.rdfpro.RDFSources;
@@ -107,8 +109,6 @@ public class PikesIR {
 
     private final List<String> layers;
 
-    private final Multimap<String, Field> layerFields;
-
     private final Set<Set<String>> layerFocus;
 
     private final RankingScore.Measure sortMeasure;
@@ -119,6 +119,8 @@ public class PikesIR {
     private final Enricher enricher;
 
     private final Analyzer analyzer;
+
+    private final Ranker ranker;
 
     private final Aggregator aggregator;
 
@@ -133,20 +135,20 @@ public class PikesIR {
                     .withName("pikesir")
                     .withOption("p", "properties", "specifies the configuration properties file",
                             "PATH", CommandLine.Type.FILE_EXISTING, true, false, false)
-                    .withOption("e", "enrich", "enriches the RDF of both documents and queries")
-                    .withOption(null, "enrich-docs", "enriches the RDF of documents only")
-                    .withOption(null, "enrich-queries", "enriches the RDF of queries only")
-                    .withOption("a", "analyze",
-                            "analyzes both documents and queries (NAF + RDF enriched)")
-                    .withOption(null, "analyze-docs",
-                            "analyzes documents only (NAF + RDF enriched)")
-                    .withOption(null, "analyze-queries",
-                            "analyzes queries only (NAF + RDF enriched)")
-                    .withOption("i", "index", "indexes document terms in Lucene")
-                    .withOption("s", "search", "evaluates queries over Lucene index")
-                    .withHeader("supports all the operations involved in the evaluation of " //
-                            + "semantic information retrieval: enrichment, analysis, " //
-                            + "indexing, search").parse(args);
+                            .withOption("e", "enrich", "enriches the RDF of both documents and queries")
+                            .withOption(null, "enrich-docs", "enriches the RDF of documents only")
+                            .withOption(null, "enrich-queries", "enriches the RDF of queries only")
+                            .withOption("a", "analyze",
+                                    "analyzes both documents and queries (NAF + RDF enriched)")
+                                    .withOption(null, "analyze-docs",
+                                            "analyzes documents only (NAF + RDF enriched)")
+                                            .withOption(null, "analyze-queries",
+                                                    "analyzes queries only (NAF + RDF enriched)")
+                                                    .withOption("i", "index", "indexes document terms in Lucene")
+                                                    .withOption("s", "search", "evaluates queries over Lucene index")
+                                                    .withHeader("supports all the operations involved in the evaluation of " //
+                                                            + "semantic information retrieval: enrichment, analysis, " //
+                                                            + "indexing, search").parse(args);
 
             // Extract options
             final Path propertiesPath = Paths.get(cmd.getOptionValue("p", String.class,
@@ -210,7 +212,7 @@ public class PikesIR {
     private static void mainHelper(final Path root, final Properties properties,
             final boolean enrichQueries, final boolean enrichDocs, final boolean analyzeQueries,
             final boolean analyzeDocs, final boolean index, final boolean search)
-            throws IOException {
+                    throws IOException {
 
         // Initialize the PikesIR main object
         final PikesIR pikesIR = new PikesIR(root, properties, "pikesir.");
@@ -267,19 +269,8 @@ public class PikesIR {
         this.pathResults = root.resolve(properties.getProperty(pr + "results", "results"));
 
         // Retrieve layers and associated fields
-        this.layers = Lists.newArrayList();
-        this.layerFields = HashMultimap.create();
-        for (final String layerSpec : Splitter.on(';').trimResults().omitEmptyStrings()
-                .split(properties.getProperty(pr + "layers"))) {
-            final int index = layerSpec.indexOf(':');
-            final String layer = layerSpec.substring(0, index).trim();
-            this.layers.add(layer);
-            for (final String fieldSpec : Splitter.on(Pattern.compile("[\\s,]+"))
-                    .omitEmptyStrings().trimResults().split(layerSpec.substring(index + 1))) {
-                final Field field = Field.forID(fieldSpec.trim());
-                this.layerFields.put(layer, field);
-            }
-        }
+        this.layers = Splitter.on(Pattern.compile("[\\s,;]+")).trimResults().omitEmptyStrings()
+                .splitToList(properties.getProperty(pr + "layers"));
 
         // Retrieve the layer combinations we focus on
         this.layerFocus = Sets.newHashSet();
@@ -304,6 +295,9 @@ public class PikesIR {
         // Build the analyzer
         this.analyzer = Analyzer.create(root, properties, "pikesir.analyzer.");
 
+        // Build the ranker
+        this.ranker = Ranker.createTfIdfRanker(0.5f);
+
         // Build the aggregator
         this.aggregator = Aggregator.create(root, properties, "pikesir.aggregator.");
 
@@ -314,6 +308,7 @@ public class PikesIR {
         LOGGER.info("Focus on layer combinations: " + Joiner.on(' ').join(this.layerFocus));
         LOGGER.info("Using enricher: {}", this.enricher);
         LOGGER.info("Using analyzer: {}", this.analyzer);
+        LOGGER.info("Using ranker: {}", this.ranker);
         LOGGER.info("Using aggregator: {}", this.aggregator);
         LOGGER.info("Using similarity: {}", this.similarity);
     }
@@ -362,16 +357,16 @@ public class PikesIR {
 
     public void analyzeDocs() throws IOException {
         analyzeHelper(this.pathDocsNAF, this.pathDocsRDFE, this.pathDocsTerms,
-                "=== Analyzing documents ===", false);
+                "=== Analyzing documents ===");
     }
 
     public void analyzeQueries() throws IOException {
         analyzeHelper(this.pathQueriesNAF, this.pathQueriesRDFE, this.pathQueriesTerms,
-                "=== Analyzing queries ===", true);
+                "=== Analyzing queries ===");
     }
 
     private void analyzeHelper(final Path pathNAF, final Path pathRDFE, final Path pathTerms,
-            final String message, final boolean isQuery) throws IOException {
+            final String message) throws IOException {
 
         final long ts = System.currentTimeMillis();
         final AtomicLong outTerms = new AtomicLong(0L);
@@ -399,7 +394,7 @@ public class PikesIR {
                             IO.utf8Reader(new ByteArrayInputStream(bytes)));
                     final String id = document.getPublic().publicId;
                     final TermVector.Builder builder = TermVector.builder();
-                    this.analyzer.analyze(document, model, builder, isQuery);
+                    this.analyzer.analyze(document, model, builder);
                     final TermVector vector = builder.build();
                     outTerms.addAndGet(vector.size());
                     synchronized (writer) {
@@ -446,15 +441,11 @@ public class PikesIR {
 
                 final Document doc = new Document();
                 doc.add(new TextField("id", docID, Store.YES));
-                for (final Field field : Field.values()) {
-                    final String fieldID = field.getID();
-                    for (final Term term : docVector.getTerms(field)) {
-                        final String fieldValue = term.getValue();
-                        for (int i = 0; i < (int) Math.ceil(term.getWeight()); ++i) {
-                            doc.add(new TextField(fieldID, fieldValue, Store.YES));
-                        }
-                        ++numTerms;
+                for (final Term term : docVector.getTerms()) {
+                    for (int i = 0; i < term.getFrequency(); ++i) {
+                        doc.add(new TextField(term.getField(), term.getValue(), Store.YES));
                     }
+                    ++numTerms;
                 }
                 writer.addDocument(doc);
             }
@@ -499,6 +490,7 @@ public class PikesIR {
         // Open the index for read and evaluate all the queries in parallel
         try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex))) {
             final IndexSearcher searcher = new IndexSearcher(reader);
+
             searcher.setSimilarity(this.similarity);
             final List<Runnable> queryJobs = Lists.newArrayList();
             final Map<Integer, String> docIDs = Maps.newConcurrentMap();
@@ -537,7 +529,7 @@ public class PikesIR {
             writer.append("layers;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10\n");
             for (final RankingScore score : sortedScores) {
                 writer.append(Joiner.on(",").join(aggregateScores.get(score))).append(";")
-                        .append(formatRankingScore(score, ";")).append("\n");
+                .append(formatRankingScore(score, ";")).append("\n");
             }
         }
 
@@ -553,9 +545,9 @@ public class PikesIR {
                         for (final String queryID : Ordering.natural().sortedCopy(
                                 entry.getValue().keySet())) {
                             writer.append(queryID)
-                                    .append(';')
-                                    .append(formatRankingScore(entry.getValue().get(queryID), ";"))
-                                    .append('\n');
+                            .append(';')
+                            .append(formatRankingScore(entry.getValue().get(queryID), ";"))
+                            .append('\n');
                         }
                     }
                 }
@@ -584,7 +576,21 @@ public class PikesIR {
             final TermVector queryVector, final Map<String, Double> rels,
             final Map<List<String>, Map<String, RankingScore>> scores,
             final Map<Integer, String> docIDs, final Map<String, TermVector> docVectors)
-            throws IOException, ParseException {
+                    throws IOException, ParseException {
+
+        // Gather statistics needed by ranker for this specific query
+        final Map<String, CollectionStatistics> layerStats = Maps.newHashMap();
+        final Map<Term, TermStatistics> termStats = Maps.newHashMap();
+        for (final String layer : this.layers) {
+            layerStats.put(layer, searcher.collectionStatistics(layer));
+        }
+        for (final Term term : queryVector.getTerms()) {
+            final org.apache.lucene.index.Term luceneTerm = new org.apache.lucene.index.Term(
+                    term.getField(), term.getValue());
+            termStats.put(term, searcher.termStatistics(luceneTerm, //
+                    TermContext.build(searcher.getTopReaderContext(), luceneTerm)));
+        }
+        final Ranker.Stats stats = new Ranker.Stats(layerStats, termStats);
 
         // Perform the query on each layer, storing all the hits obtained
         final Map<String, Hit> hits = Maps.newHashMap();
@@ -594,18 +600,15 @@ public class PikesIR {
             // Compose query
             final StringBuilder builder = new StringBuilder();
             String separator = "";
-            for (final Field field : this.layerFields.get(layer)) {
-                for (final Term term : queryVector.getTerms(field)) {
-                    builder.append(separator);
-                    builder.append(field.getID()).append(":\"").append(term.getValue())
-                            .append("\"");
-                    final double actualBoost = term.getWeight();
+            for (final Term term : queryVector.getTerms(layer)) {
+                builder.append(separator);
+                builder.append(layer).append(":\"").append(term.getValue()).append("\"");
+                final double actualBoost = term.getWeight();
 
-                    if (actualBoost != 1.0) {
-                        builder.append("^").append(actualBoost);
-                    }
-                    separator = " OR ";
+                if (actualBoost != 1.0) {
+                    builder.append("^").append(actualBoost);
                 }
+                separator = " OR ";
             }
             final String queryString = builder.toString();
 
@@ -664,8 +667,16 @@ public class PikesIR {
                         }
                     }
                 }
-                this.aggregator.aggregate(allLayers, queryLayers, queryVector, sortedHits,
-                        sortedDocVectors);
+
+                //                this.aggregator.aggregate(allLayers, queryLayers, queryVector, sortedHits,
+                //                        sortedDocVectors);
+
+                final float[] docScores = this.ranker.rank(queryVector.project(queryLayers),
+                        sortedDocVectors.toArray(new TermVector[0]), stats);
+                for (int i = 0; i < sortedDocVectors.size(); ++i) {
+                    sortedHits.get(i).setAggregateScore(docScores[i]);
+                }
+
                 Collections.sort(sortedHits, Hit.comparator(null, true));
                 final List<String> ids = Lists.newArrayListWithCapacity(sortedHits.size());
                 final Map<String, Double> idsScores = Maps.newHashMap();
@@ -680,7 +691,7 @@ public class PikesIR {
 
                 queryLines.put(score,
                         Joiner.on(',').join(queryLayers) + ';' + formatRankingScore(score, ";")
-                                + ';' + Joiner.on(",").join(Iterables.limit(sortedHits, 10)));
+                        + ';' + Joiner.on(",").join(Iterables.limit(sortedHits, 10)));
 
                 if (bestScore == null
                         || RankingScore.comparator(this.sortMeasure, this.sortMeasureAtNumber,
@@ -735,7 +746,7 @@ public class PikesIR {
                         final String id = rowIDs[j];
                         final Double rel = rels.get(id);
                         writer.append(id).append(rel == null ? "" : " (" + rel + ")").append(';')
-                                .append(Double.toString(score)).append(";;");
+                        .append(Double.toString(score)).append(";;");
                     }
                 }
                 writer.append("\n");
@@ -755,8 +766,7 @@ public class PikesIR {
             if (!"id".equals(name)) {
                 final String value = field.stringValue();
                 try {
-                    final Field f = Field.forID(name);
-                    builder.addTerm(f, value);
+                    builder.addTerm(name, value);
                 } catch (final Throwable ex) {
                     // Ignore
                 }

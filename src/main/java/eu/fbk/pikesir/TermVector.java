@@ -19,6 +19,8 @@ public final class TermVector implements Comparable<TermVector> {
 
     public static final TermVector EMPTY = new TermVector(ImmutableList.of());
 
+    private static final String HIGHEST_TERM_VALUE = (char) 0xFFFF + "";
+
     private final List<Term> terms;
 
     private transient int hash;
@@ -39,18 +41,17 @@ public final class TermVector implements Comparable<TermVector> {
         return this.terms;
     }
 
-    public List<Term> getTerms(final Field field) {
+    public List<Term> getTerms(final String field) {
         final int start = -Collections.binarySearch(this.terms, Term.create(field, "")) - 1;
         int end = this.terms.size();
-        if (start < this.terms.size() && field.ordinal() < Field.values().length - 1) {
-            final Field nextField = Field.values()[field.ordinal() + 1];
-            end = -Collections.binarySearch(this.terms, Term.create(nextField, "")) - 1;
+        if (start < this.terms.size()) {
+            end = -Collections.binarySearch(this.terms, Term.create(field, HIGHEST_TERM_VALUE)) - 1;
         }
         return this.terms.subList(start, end);
     }
 
     @Nullable
-    public Term getTerm(final Field field, final String value) {
+    public Term getTerm(final String field, final String value) {
         final int index = Collections.binarySearch(this.terms, Term.create(field, value));
         return index >= 0 ? this.terms.get(index) : null;
     }
@@ -58,13 +59,14 @@ public final class TermVector implements Comparable<TermVector> {
     public TermVector scale(final double factor) {
         final List<Term> newTerms = new ArrayList<>(this.terms.size());
         for (final Term term : this.terms) {
-            newTerms.add(Term.create(term.getField(), term.getValue(), term.getWeight() * factor));
+            newTerms.add(Term.create(term.getField(), term.getValue(), term.getFrequency(),
+                    term.getWeight() * factor));
         }
         return new TermVector(newTerms);
     }
 
-    public TermVector project(final Iterable<Field> fields) {
-        final Set<Field> fieldSet = ImmutableSet.copyOf(fields);
+    public TermVector project(final Iterable<String> fields) {
+        final Set<String> fieldSet = ImmutableSet.copyOf(fields);
         final List<Term> newTerms = new ArrayList<>(this.terms.size());
         for (final Term term : this.terms) {
             if (fieldSet.contains(term.getField())) {
@@ -89,8 +91,9 @@ public final class TermVector implements Comparable<TermVector> {
                 final Term term2 = terms2.get(index2);
                 final int compare = term1.compareTo(term2);
                 if (compare == 0) {
-                    newTerms.add(Term.create(term1.getField(), term1.getValue(), term1.getWeight()
-                            + term2.getWeight()));
+                    newTerms.add(Term.create(term1.getField(), term1.getValue(),
+                            term1.getFrequency() + term2.getFrequency(),
+                            term1.getWeight() + term2.getWeight()));
                     ++index2;
                     break;
                 } else if (compare > 0) {
@@ -121,8 +124,8 @@ public final class TermVector implements Comparable<TermVector> {
                 final Term term2 = terms2.get(index2);
                 final int compare = term1.compareTo(term2);
                 if (compare == 0) {
-                    newTerms.add(Term.create(term1.getField(), term1.getValue(), term1.getWeight()
-                            * term2.getWeight()));
+                    newTerms.add(Term.create(term1.getField(), term1.getValue(),
+                            term1.getFrequency(), term1.getWeight() * term2.getWeight()));
                     ++index2;
                     break;
                 } else if (compare > 0) {
@@ -188,7 +191,7 @@ public final class TermVector implements Comparable<TermVector> {
     @Override
     public String toString() {
         final StringBuilder builder = new StringBuilder("[");
-        Field field = null;
+        String field = null;
         String separator = "";
         for (final Term term : this.terms) {
             if (field == null || !field.equals(term.getField())) {
@@ -213,9 +216,11 @@ public final class TermVector implements Comparable<TermVector> {
             for (final Term term : entry.getValue().terms) {
                 writeEscaped(writer, id);
                 writer.write('\t');
-                writeEscaped(writer, term.getField().getID());
+                writeEscaped(writer, term.getField());
                 writer.write('\t');
                 writeEscaped(writer, term.getValue());
+                writer.write('\t');
+                writeEscaped(writer, Integer.toString(term.getFrequency()));
                 writer.write('\t');
                 writeEscaped(writer, Double.toString(term.getWeight()));
                 writer.write('\n');
@@ -234,10 +239,11 @@ public final class TermVector implements Comparable<TermVector> {
             if (id.isEmpty()) {
                 break;
             }
-            final Field field = Field.forID(readEscaped(reader, sb));
+            final String field = readEscaped(reader, sb);
             final String value = readEscaped(reader, sb);
+            final int frequency = Integer.parseInt(readEscaped(reader, sb));
             final double weight = Double.parseDouble(readEscaped(reader, sb));
-            final Term term = Term.create(field, value, weight);
+            final Term term = Term.create(field, value, frequency, weight);
             Builder builder = (Builder) map.get(id);
             if (builder == null) {
                 builder = builder();
@@ -315,11 +321,12 @@ public final class TermVector implements Comparable<TermVector> {
             this.terms = terms;
         }
 
-        public Builder addTerm(final Field field, final String value, final double weight) {
-            return addTerm(Term.create(field, value, weight));
+        public Builder addTerm(final String field, final String value, final int frequency,
+                final double weight) {
+            return addTerm(Term.create(field, value, frequency, weight));
         }
 
-        public Builder addTerm(final Field field, final String value) {
+        public Builder addTerm(final String field, final String value) {
             return addTerm(Term.create(field, value));
         }
 
@@ -328,6 +335,7 @@ public final class TermVector implements Comparable<TermVector> {
             if (index >= 0) {
                 final Term oldTerm = this.terms.get(index);
                 final Term newTerm = Term.create(oldTerm.getField(), oldTerm.getValue(),
+                        oldTerm.getFrequency() + term.getFrequency(),
                         oldTerm.getWeight() + term.getWeight());
                 this.terms.set(index, newTerm);
             } else {

@@ -5,7 +5,7 @@ import com.google.common.collect.ImmutableSet;
 
 import org.junit.Test;
 
-import eu.fbk.pikesir.RankingScore;
+import eu.fbk.pikesir.util.RankingScore;
 
 public class RankingScoreTest {
 
