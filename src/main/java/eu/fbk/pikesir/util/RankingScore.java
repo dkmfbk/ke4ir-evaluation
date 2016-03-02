@@ -135,19 +135,18 @@ public class RankingScore implements Serializable {
         return this.maps[atNumber - 1];
     }
 
-    public double get(final Measure measure, @Nullable final Integer atNumber) {
-        switch (measure) {
-        case PRECISION:
-            return getPrecision(atNumber);
-        case MRR:
-            Preconditions.checkArgument(atNumber == null, "MRR @ N is not a valid measure");
+    public double get(final Measure measure) {
+        switch (measure.getType()) {
+        case "p":
+            return getPrecision(measure.getNumber());
+        case "mrr":
             return getMRR();
-        case NDCG:
-            return atNumber == null ? getNDCG() : getNDCG(atNumber);
-        case ALT_NDCG:
-            return atNumber == null ? getAltNDCG() : getAltNDCG(atNumber);
-        case MAP:
-            return atNumber == null ? getMAP() : getMAP(atNumber);
+        case "ndcg":
+            return measure.getNumber() > 0 ? getNDCG(measure.getNumber()) : getNDCG();
+        case "altndcg":
+            return measure.getNumber() > 0 ? getAltNDCG(measure.getNumber()) : getAltNDCG();
+        case "map":
+            return measure.getNumber() > 0 ? getMAP(measure.getNumber()) : getMAP();
         default:
             throw new IllegalArgumentException("Invalid measure " + measure);
         }
@@ -214,13 +213,13 @@ public class RankingScore implements Serializable {
     }
 
     public static Ordering<RankingScore> comparator(final Measure measure,
-            @Nullable final Integer atNumber, final boolean higherFirst) {
+            final boolean higherFirst) {
         return new Ordering<RankingScore>() {
 
             @Override
             public int compare(final RankingScore left, final RankingScore right) {
-                final double leftValue = left.get(measure, atNumber);
-                final double rightValue = right.get(measure, atNumber);
+                final double leftValue = left.get(measure);
+                final double rightValue = right.get(measure);
                 final int result = Double.compare(leftValue, rightValue);
                 return higherFirst ? -result : result;
             }
@@ -298,17 +297,86 @@ public class RankingScore implements Serializable {
         }
     }
 
-    public enum Measure {
+    public static final class Measure {
 
-        PRECISION,
+        public static final Measure P1 = new Measure("p", 1);
 
-        MRR,
+        public static final Measure P3 = new Measure("p", 3);
 
-        NDCG,
+        public static final Measure P5 = new Measure("p", 5);
 
-        ALT_NDCG,
+        public static final Measure P10 = new Measure("p", 10);
 
-        MAP
+        public static final Measure MRR = new Measure("mrr", 0);
+
+        public static final Measure NDCG = new Measure("ndcg", 0);
+
+        public static final Measure NDCG10 = new Measure("ndcg", 10);
+
+        public static final Measure ALTNDCG = new Measure("altndcg", 0);
+
+        public static final Measure ALTNDCG10 = new Measure("altndcg", 10);
+
+        public static final Measure MAP = new Measure("map", 0);
+
+        public static final Measure MAP10 = new Measure("map", 10);
+
+        private final String type;
+
+        private final int number;
+
+        private Measure(final String type, final int number) {
+            this.type = type.intern();
+            this.number = number;
+        }
+
+        public static Measure create(final String spec) {
+            final int index = spec.indexOf('@');
+            if (index > 0) {
+                final String type = spec.substring(0, index).trim().toLowerCase().intern();
+                final int number = Integer.parseInt(spec.substring(index + 1).trim());
+                Preconditions.checkArgument(number > 0);
+                Preconditions.checkArgument(type == "p" || type == "ndcg" || type == "altndcg"
+                        || type == "map");
+                return new Measure(type, number);
+            } else {
+                final String type = spec.trim().toLowerCase().intern();
+                Preconditions.checkArgument(type == "mrr" || type == "ndcg" || type == "altndcg"
+                        || type == "map");
+                return new Measure(type, 0);
+            }
+        }
+
+        public String getType() {
+            return this.type;
+        }
+
+        @Nullable
+        public int getNumber() {
+            return this.number;
+        }
+
+        @Override
+        public boolean equals(final Object object) {
+            if (object == this) {
+                return true;
+            }
+            if (!(object instanceof Measure)) {
+                return false;
+            }
+            final Measure other = (Measure) object;
+            return this.type == other.type && this.number == other.number;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(this.type, this.number);
+        }
+
+        @Override
+        public String toString() {
+            return this.type + (this.number > 0 ? "@" + this.number : "");
+        }
 
     }
 
@@ -365,16 +433,13 @@ public class RankingScore implements Serializable {
          *
          * @param ranking
          *            the ranking returned by the system, not null
-         * @param scores
-         *            the scores computed by the system and used to build the ranking, possibly
-         *            null if this information is not available
          * @param relItems
          *            the set of gold relevant items, not null
          * @param rels
          *            the gold relevance scores, null if not available
          */
-        private <T> void update(final Iterable<T> ranking, @Nullable final Map<T, Double> scores,
-                final Set<T> relItems, @Nullable final Map<T, Double> rels) {
+        private <T> void update(final Iterable<T> ranking, final Set<T> relItems,
+                @Nullable final Map<T, Double> rels) {
 
             double[] relsSorted = null;
             if (rels != null) {
@@ -393,20 +458,20 @@ public class RankingScore implements Serializable {
             double ndcgDen = 0.0; // NDCG denominator
             double altNdcgNum = 0.0; // NDCG numerator
             double altNdcgDen = 0.0; // NDCG denominator
-            final double ln2 = Math.log(2.0);
+            final double ln2 = Math.log(2.0); // constant for transforming log_e(n) to log_2(n)
             double pn = 0.0;
 
             synchronized (this) {
 
                 ++this.numRankings;
-                this.result = null;
+                this.result = null; // invalidate cached result
 
                 for (final T item : ranking) {
                     ++n;
                     final int r = relItems.contains(item) ? 1 : 0; // item relevant?
                     c += r;
-                    final double f = n == 1 ? 1 : ln2 / Math.log(n);
-                    final double altF = ln2 / Math.log(n + 1);
+                    final double f = n == 1 ? 1 : ln2 / Math.log(n); // factor used for NDCG
+                    final double altF = ln2 / Math.log(n + 1); // factor used for alt NDCG
                     pn = (double) c / n; // precision @ n
                     mapNum += pn * r;
 
@@ -430,7 +495,9 @@ public class RankingScore implements Serializable {
                         this.sumNDCGs[n - 1] += ndcgNum / ndcgDen;
                         this.sumAltNDCGs[n - 1] += altNdcgNum / altNdcgDen;
                         if (!relItems.isEmpty()) {
-                            this.sumMAPs[n - 1] += mapNum / relItems.size(); // TODO Math.min(n, relItems.size());
+                            // division by relItems.size() and not Math.min(n, relItems.size()) is
+                            // justified by: http://www.msr-waypoint.net/pubs/130616/fp146-radlinski.pdf
+                            this.sumMAPs[n - 1] += mapNum / relItems.size();
                         }
                     }
                 }
@@ -438,18 +505,18 @@ public class RankingScore implements Serializable {
                 final int limit = Math.max(this.maxN, relItems.size());
                 for (++n; n <= limit; ++n) {
                     if (n <= relItems.size()) {
-                        final double f = n == 1 ? 1 : ln2 / Math.log(n);
-                        final double altF = ln2 / Math.log(n + 1);
+                        final double f = n == 1 ? 1 : ln2 / Math.log(n); // factor used for NDCG
+                        final double altF = ln2 / Math.log(n + 1); // factor used for alt NDCG
                         ndcgDen += (rels == null ? 1.0 : relsSorted[relsSorted.length - n]) * f;
                         altNdcgDen += (rels == null ? 1.0 : Math.pow(2.0,
                                 relsSorted[relsSorted.length - n]) - 1) * altF;
                     }
                     if (n <= this.maxN) {
-                        this.sumPrecisions[n - 1] += (double) c / n; // TODO pn ?
+                        this.sumPrecisions[n - 1] += (double) c / n;
                         this.sumNDCGs[n - 1] += ndcgNum / ndcgDen;
                         this.sumAltNDCGs[n - 1] += altNdcgNum / altNdcgDen;
                         if (!relItems.isEmpty()) {
-                            this.sumMAPs[n - 1] += mapNum / relItems.size(); // TODO Math.min(n, relItems.size());
+                            this.sumMAPs[n - 1] += mapNum / relItems.size();
                         }
                     }
                 }
@@ -463,21 +530,13 @@ public class RankingScore implements Serializable {
         }
 
         public <T> Evaluator add(final Iterable<T> ranking, final Iterable<T> relItems) {
-            update(ranking, null, relItems instanceof Set<?> ? (Set<T>) relItems : //
+            update(ranking, relItems instanceof Set<?> ? (Set<T>) relItems : //
                     ImmutableSet.copyOf(relItems), null);
             return this;
         }
 
         public <T> Evaluator add(final Iterable<T> ranking, final Map<T, Double> rels) {
-            update(ranking, null, rels.keySet(), rels);
-            return this;
-        }
-
-        public <T> Evaluator add(final Iterable<T> ranking, final Map<T, Double> scores,
-                final Map<T, Double> rels) {
-
-            // Delegate
-            update(ranking, scores, rels.keySet(), rels);
+            update(ranking, rels.keySet(), rels);
             return this;
         }
 

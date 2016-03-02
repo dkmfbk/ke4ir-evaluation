@@ -93,6 +93,11 @@
             <groupId>org.jdom</groupId>
             <artifactId>jdom2</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-math3</artifactId>
+            <version>${commons-math3-version}</version>
+        </dependency>
 
         <!-- Runtime dependencies -->
         <dependency>
@@ -184,6 +189,7 @@
         <sparkey-version>2.1.2</sparkey-version>
         <naflib-version>1.0-SNAPSHOT</naflib-version>
         <snappy-version>1.1.2</snappy-version>
+        <commons-math3-version>3.6</commons-math3-version>
     </properties>
 
 </project>

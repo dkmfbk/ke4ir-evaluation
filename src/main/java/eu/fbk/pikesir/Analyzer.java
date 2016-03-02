@@ -2,7 +2,9 @@ package eu.fbk.pikesir;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 
@@ -11,10 +13,10 @@ import javax.xml.datatype.XMLGregorianCalendar;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ImmutableList;
+import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 
 import org.openrdf.model.Literal;
@@ -32,24 +34,49 @@ import org.tartarus.snowball.SnowballProgram;
 import ixa.kaflib.KAFDocument;
 
 import eu.fbk.pikesir.TermVector.Builder;
+import eu.fbk.rdfpro.util.Hash;
+import eu.fbk.rdfpro.util.Namespaces;
 import eu.fbk.rdfpro.util.QuadModel;
 
-/*
- * For ESWC 2016 we used only the 'SemanticAnalyzer'. The 'TaxonomicAnalyzer' is an attempt at
- * implementing the taxonomic approach by H. Sack & co.
+/**
+ * Analyzes a text (document or query) and the associated (enriched) knowledge graph, extracting
+ * textual and semantic terms from them.
  */
-
 public abstract class Analyzer {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(Analyzer.class);
 
+    /**
+     * Analyzes a document (or query, with their NLP annotations) and the associated knowledge
+     * graph, extracting and emitting terms to the supplied {@code TermVector.Builder}.
+     *
+     * @param document
+     *            a KAFDocument object containing the text and NLP annotations of the document or
+     *            query to analyze
+     * @param model
+     *            the (enriched) knowledge graph associated to the document or query
+     * @param builder
+     *            the sink object where to send extracted terms
+     */
     public abstract void analyze(KAFDocument document, QuadModel model, TermVector.Builder builder);
 
+    /**
+     * {@inheritDoc} Emits a descriptive string describe the Analyzer and its configuration. This
+     * implementation emits the class name.
+     */
     @Override
     public String toString() {
         return getClass().getSimpleName();
     }
 
+    /**
+     * Returns a composite {@code Analyzer} that the specified analyzers to the input text and
+     * knowledge graph, returning the concatenation of the terms extracted from each of them.
+     *
+     * @param analyzers
+     *            the {@code Analyzer}s to concatenate
+     * @return the resulting composite {@code Analyzer}
+     */
     public static Analyzer concat(final Analyzer... analyzers) {
         if (analyzers.length == 0) {
             return createNullAnalyzer();
@@ -60,19 +87,111 @@ public abstract class Analyzer {
         }
     }
 
+    /**
+     * Returns a null {@code Analyzer} that does not extract any term from the supplied text and
+     * knowledge graph.
+     *
+     * @return a null {@code Analyzer}, which does not extract any term
+     */
     public static Analyzer createNullAnalyzer() {
         return NullAnalyzer.INSTANCE;
     }
 
+    /**
+     * Returns an {@code Analyzer} that extracts textual terms from the supplied text. The
+     * knowledge graph is ignored. The returned {@code Analyzer} uses the same tokenization
+     * produced by the NLP analysis of the text (i.e., the one included in the supplied
+     * {@link KAFDocument} object). Tokens corresponding to compound words are emitted as is but
+     * also a normalized version (spaces and other separators are removed) and their subwords are
+     * emitted. All emitted terms are put in lowercase, stemmed (using the specified SnowBall
+     * stemmer class) and stop words from the supplied list are removed. This pipeline is based on
+     * and produces results very close to the default text processing of Lucene.
+     *
+     * @param stemmerClass
+     *            the simple name of the stemmer class, to be chosen within package
+     *            {@code org.tartarus.snowball.ext}; example: {@code EnglishStemmer}
+     * @param stopWords
+     *            a collection of stop words; example: {@code a, an, and, are, as, at, be,
+     *            but, by, for, if, in, into, is, it, no, not, of, on, or, such, that, the,
+     *            their, then, there, these, they, this, to, was, will, with, 's} (this is the
+     *            default list used in Lucene for English texts)
+     * @return the created textual {@code Analyzer}
+     */
     public static Analyzer createTextualAnalyzer(final String stemmerClass,
             @Nullable final Iterable<String> stopWords) {
         return new TextualAnalyzer(stemmerClass, stopWords);
     }
 
-    public static Analyzer createSemanticAnalyzer() {
-        return new SemanticAnalyzer();
+    /**
+     * Returns an {@code Analyzer} that extracts semantic terms from the supplied knowledge graph.
+     * The text is ignored. Using the specified {@code denotedByProperty}, the returned
+     * {@code Analyzer} identifies all the mentions in the text and the entities each of them
+     * denotes. For each mention, it extracts four sets of URI, TYPE, FRAME and TIME terms. URI
+     * terms are the URIs of denoted entities and their extraction is controlled by
+     * {@code uriNamespaces}. TYPE terms are the types associated to denoted entities, controlled
+     * by {@code typeNamespaces}. FRAME terms are {@code <frame type, participant URI>} pairs
+     * where the frame type is controlled by {@code frameNamespaces}, and the participant URI must
+     * correspond to a mentioned entity, linked to the frame entity, whose URI is matched by
+     * {@code uriNamespaces}. TIME terms are finally extracted based on temporal information
+     * (date/time literals, OWL time values) attached to denoted entities or their types. Each
+     * term extracted from a mention is emitted with frequency 1 and weight equal to the
+     * reciprocal of the number of terms extracted from that mention for that layer.
+     *
+     * @param denotedByProperty
+     *            the URI of the property linking entities to mentions denoting them (exactly in
+     *            that direction)
+     * @param uriNamespaces
+     *            the URI namespaces that denoted entities must have in order to generate URI
+     *            terms; leave empty or null to disable the extraction of URI terms
+     * @param typeNamespaces
+     *            the URI namespaces that entity types must have in order to generate TYPE terms;
+     *            leave empty or null to disable the extraction of TYPE terms
+     * @param frameNamespaces
+     *            the URI namespaces that an entity types must have in order for that entity to be
+     *            recognized as a frame, leading to the emission of FRAME terms; leave empty or
+     *            null to disable the extraction of FRAME terms
+     * @return the created semantic {@code Analyzer}
+     */
+    public static Analyzer createSemanticAnalyzer(final URI denotedByProperty,
+            final Iterable<String> uriNamespaces, final Iterable<String> typeNamespaces,
+            final Iterable<String> frameNamespaces) {
+        return new SemanticAnalyzer(denotedByProperty, uriNamespaces, typeNamespaces,
+                frameNamespaces);
     }
 
+    /**
+     * Returns an {@code Analyzer} based on the configuration properties supplied. The method
+     * looks for certain properties within the {@link Properties} object supplied, prepending them
+     * an optional prefix (e.g., if property is X and the prefix is Y, the method will look for
+     * property Y.X). The path parameter is used as the base directory for resolving relative
+     * paths contained in the examined properties. The properties currently supported are:
+     * <ul>
+     * <li>{@code type} - a space-separated list of types of {@code Analyzer} to configure;
+     * supported values are {@code textual} for {@link #createTextualAnalyzer(String, Iterable)}
+     * and {@code semantic} for {@link #createSemanticAnalyzer(URI, Iterable, Iterable, Iterable)}
+     * (if both are specified, they are concatenated in a single {@code Analyzer});</li>
+     * <li>{@code textual.stemmer} - the name of the SnowBall stemmer class used by the textual
+     * {@code Analyzer} (e.g., EnglishStemmer);</li>
+     * <li>{@code textual.stopwords} - a space-separated list of stop word, used by the textual
+     * {@code Analyzer};</li>
+     * <li>{@code semantic.denotedBy} - the URI string of the property linking entities to
+     * mentions denoting them, for use by the semantic {@code Analyzer};</li>
+     * <li>{@code semantic.uri} - a space-separated list of URI namespaces controlling the
+     * emission of URI terms by the semantic {@code Analyzer};</li>
+     * <li>{@code semantic.type} - a space-separated list of URI namespaces controlling the
+     * emission of TYPE terms by the semantic {@code Analyzer};</li>
+     * <li>{@code semantic.frame} - a space-separated list of URI namespaces controlling the
+     * emission of FRAME terms by the semantic {@code Analyzer}.</li>
+     * </ul>
+     *
+     * @param root
+     *            the base directory for resolving relative paths
+     * @param properties
+     *            the configuration properties
+     * @param prefix
+     *            an optional prefix to prepend to supported properties
+     * @return an {@code Analyzer} based on the specified configuration (if successful)
+     */
     public static Analyzer create(final Path root, final Properties properties, String prefix) {
 
         // Normalize prefix, ensuring it ends with '.'
@@ -81,8 +200,12 @@ public abstract class Analyzer {
         // Build a list of analyzers to be later combined
         final List<Analyzer> analyzers = new ArrayList<>();
 
+        // Retrieve the types of analyzer enabled in the configuration
+        final Set<String> types = ImmutableSet.copyOf(properties.getProperty(prefix + "type", "")
+                .split("\\s+"));
+
         // Add an analyzer extracting stems, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "textual", "false"))) {
+        if (types.contains("textual")) {
             final String stemmerClass = properties.getProperty(prefix + "textual.stemmer");
             final String stopwordsProp = properties.getProperty(prefix + "textual.stopwords");
             final Set<String> stopwords = stopwordsProp == null ? null : ImmutableSet
@@ -91,11 +214,20 @@ public abstract class Analyzer {
         }
 
         // Add a semantic analyzer, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "semantic", "false"))) {
-            analyzers.add(createSemanticAnalyzer());
+        if (types.contains("semantic")) {
+            final URI denotedByProperty = new URIImpl(properties.getProperty(prefix
+                    + "semantic.denotedby"));
+            final Set<String> uriNamespaces = ImmutableSet.copyOf(properties.getProperty(
+                    prefix + "semantic.uri", "").split("\\s+"));
+            final Set<String> typeNamespaces = ImmutableSet.copyOf(properties.getProperty(
+                    prefix + "semantic.type", "").split("\\s+"));
+            final Set<String> frameNamespaces = ImmutableSet.copyOf(properties.getProperty(
+                    prefix + "semantic.frame", "").split("\\s+"));
+            analyzers.add(createSemanticAnalyzer(denotedByProperty, uriNamespaces, typeNamespaces,
+                    frameNamespaces));
         }
 
-        // Combine the enrichers
+        // Combine the analyzers (if necessary)
         return concat(analyzers.toArray(new Analyzer[analyzers.size()]));
     }
 
@@ -294,199 +426,210 @@ public abstract class Analyzer {
 
     private static final class SemanticAnalyzer extends Analyzer {
 
-        private static final URI ENTITY_CLASS = new URIImpl(
-                "http://dkm.fbk.eu/ontologies/knowledgestore#Entity");
-
-        private static final URI DENOTED_BY = new URIImpl(
-                "http://groundedannotationframework.org/gaf#denotedBy");
-
-        private static final URI HAS_DATE_TIME_DESCRIPTION = new URIImpl(
+        private static final URI OWLTIME_HAS_DATE_TIME_DESCRIPTION = new URIImpl(
                 "http://www.w3.org/TR/owl-time#hasDateTimeDescription");
 
-        private static final Set<String> TYPE_NAMESPACES = ImmutableSet.of( //
-                "http://dbpedia.org/class/yago/" //
-                // "http://www.ontologyportal.org/SUMO.owl#" //
-                );
+        private static final URI OWLTIME_YEAR = new URIImpl("http://www.w3.org/TR/owl-time#year");
 
-        // TODO: check below inclusion / exclusion of FrameBase / NB / PB
+        private static final URI OWLTIME_MONTH = new URIImpl("http://www.w3.org/TR/owl-time#month");
 
-        private static final Set<String> FRAME_PREDICATE_NAMESPACES = ImmutableSet.of( //
-                "http://framebase.org/ns/"
-                //"http://www.newsreader-project.eu/ontologies/propbank/", //
-                //"http://www.newsreader-project.eu/ontologies/nombank/",
-                );
+        private static final URI OWLTIME_DAY = new URIImpl("http://www.w3.org/TR/owl-time#day");
 
-        private static final Set<String> FRAME_ROLE_NAMESPACES = ImmutableSet.of( //
-                "http://framebase.org/ns/", //
-                "http://www.newsreader-project.eu/ontologies/propbank/", //
-                "http://www.newsreader-project.eu/ontologies/nombank/");
+        private final URI denotedByProperty;
+
+        private final Set<String> uriNamespaces;
+
+        private final Set<String> typeNamespaces;
+
+        private final Set<String> frameNamespaces;
+
+        SemanticAnalyzer(final URI denotedByProperty,
+                @Nullable final Iterable<String> uriNamespaces,
+                @Nullable final Iterable<String> typeNamespaces,
+                @Nullable final Iterable<String> frameNamespaces) {
+
+            this.denotedByProperty = Objects.requireNonNull(denotedByProperty);
+            this.uriNamespaces = uriNamespaces == null ? ImmutableSet.of() : ImmutableSet
+                    .copyOf(uriNamespaces);
+            this.typeNamespaces = typeNamespaces == null ? ImmutableSet.of() : ImmutableSet
+                    .copyOf(typeNamespaces);
+            this.frameNamespaces = frameNamespaces == null ? ImmutableSet.of() : ImmutableSet
+                    .copyOf(frameNamespaces);
+        }
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
                 final Builder builder) {
 
-            for (final Resource entity : model.filter(null, RDF.TYPE, ENTITY_CLASS).subjects()) {
+            // Extract entities and mentions, plus the mapping mention -> denoted entities
+            final Set<Resource> entities = Sets.newHashSet();
+            final Multimap<Resource, Resource> mentions = HashMultimap.create();
+            for (final Statement stmt : model.filter(null, this.denotedByProperty, null)) {
+                if (stmt.getObject() instanceof Resource) {
+                    entities.add(stmt.getSubject());
+                    mentions.put((Resource) stmt.getObject(), stmt.getSubject());
+                }
+            }
 
-                // Obtain number of mentions for current entity
-                final int numMentions = model.filter(entity, DENOTED_BY, null).size();
+            // Iterate over each mention with its denoted entities, emitting semantic terms
+            for (final Collection<Resource> mentionEntities : mentions.asMap().values()) {
 
-                // Obtain types and predicates
-                final Set<URI> types = Sets.newHashSet();
-                final Set<URI> predicates = Sets.newHashSet();
-                for (final Value value : model.filter(entity, RDF.TYPE, null).objects()) {
-                    if (value instanceof URI) {
+                // Allocate sets for the URI, TYPE, FRAME and TIME terms denoted by the mention
+                final Set<String> uris = Sets.newHashSet();
+                final Set<String> types = Sets.newHashSet();
+                final Set<String> frames = Sets.newHashSet();
+                final Set<String> times = Sets.newHashSet();
+
+                // Populate the sets by iterating over the entities denoted by the current mention
+                for (final Resource entity : mentionEntities) {
+
+                    // Extract a URI term if the mentioned entity is a URI in a specific namespace
+                    if (entity instanceof URI
+                            && this.uriNamespaces.contains(((URI) entity).getNamespace())) {
+                        uris.add(format((URI) entity));
+                    }
+
+                    // Extract TYPE and FRAME terms based on the types associated to the entity
+                    for (final Value value : model.filter(entity, RDF.TYPE, null).objects()) {
+                        if (!(value instanceof URI)) {
+                            continue; // consider only URI types
+                        }
                         final URI uri = (URI) value;
                         final String ns = uri.getNamespace();
-                        if (TYPE_NAMESPACES.contains(ns)) {
-                            types.add(uri);
-                        } else if (FRAME_PREDICATE_NAMESPACES.contains(ns)) {
-                            predicates.add(uri);
+                        if (this.typeNamespaces.contains(ns)) {
+                            types.add(format(uri));
                         }
-                    }
-                }
-
-                // Obtain role properties
-                final Set<URI> roles = Sets.newHashSet();
-                for (final Statement stmt : model.filter(entity, null, null)) {
-                    if (FRAME_ROLE_NAMESPACES.contains(stmt.getPredicate().getNamespace())) {
-                        roles.add(stmt.getPredicate());
-                    }
-                }
-
-                // Obtain predicate participants
-                Set<URI> participants = ImmutableSet.of();
-                if (!roles.isEmpty()) {
-                    participants = Sets.newHashSet();
-                    for (final URI role : roles) {
-                        for (final Value value : model.filter(entity, role, null).objects()) {
-                            if (value instanceof URI && ((URI) value).getNamespace().equals( //
-                                    "http://dbpedia.org/resource/")) {
-                                participants.add((URI) value);
-                            }
-                        }
-                    }
-                }
-
-                // Obtain date components
-                final List<String> times = Lists.newArrayList();
-                for (final Resource uri : Iterables.concat(ImmutableList.of(entity), types)) {
-                    for (final Statement stmt : model.filter(uri, null, null)) {
-                        if (stmt.getObject() instanceof Literal) {
-                            final Literal lit = (Literal) stmt.getObject();
-                            final URI dt = lit.getDatatype();
-                            if (dt.equals(XMLSchema.DATETIME) || dt.equals(XMLSchema.DATE)
-                                    || dt.equals(XMLSchema.GYEAR)
-                                    || dt.equals(XMLSchema.GYEARMONTH)) {
-                                getDateComponents(lit, times, times, times, times, times);
-                            }
-                        } else if (stmt.getObject() instanceof URI
-                                && stmt.getPredicate().equals(HAS_DATE_TIME_DESCRIPTION)) {
-                            String str = ((URI) stmt.getObject()).getLocalName();
-                            final int index = str.indexOf("_desc");
-                            if (index >= 0) {
-                                str = str.substring(0, index);
-                                if (str.length() >= 4) {
-                                    final int year = Integer.parseInt(str.substring(0, 4));
-                                    times.add("century:" + year / 100);
-                                    times.add("decade:" + year / 10);
-                                    times.add("year:" + year);
-                                    if (str.length() >= 6) {
-                                        final int month = Integer.parseInt(str.substring(4, 6));
-                                        times.add("month:" + year + "-" + month);
-                                    }
+                        if (this.frameNamespaces.contains(ns)) {
+                            // In case of frames we consider as participants all the entities
+                            // connected to the frame entity that (1) have mentions in the document
+                            // and (2) are identified by URIs in uriNamespaces
+                            for (final Value part : model.filter(entity, null, null).objects()) {
+                                if (part instanceof URI && entities.contains(part) && //
+                                        this.uriNamespaces.contains(((URI) part).getNamespace())) {
+                                    frames.add(format(uri) + "__" + format((URI) part));
                                 }
                             }
                         }
                     }
-                }
 
-                // Emit frame terms
-                final double frameWeight = (double) numMentions
-                        / (participants.size() * predicates.size());
-                for (final URI participant : participants) {
-                    for (final URI predicate : predicates) {
-                        final String id = predicate.getLocalName() + "__"
-                                + participant.getLocalName();
-                        builder.addTerm("frame", id, numMentions, frameWeight);
+                    // Extract TIME terms from the entity
+                    for (final Statement stmt : model.filter(entity, null, null)) {
+                        if (stmt.getObject() instanceof Literal) {
+                            extractTimeComponents(times, (Literal) stmt.getObject());
+                        } else if (stmt.getObject() instanceof Resource
+                                && stmt.getPredicate().equals(OWLTIME_HAS_DATE_TIME_DESCRIPTION)) {
+                            extractTimeComponents(times, (Resource) stmt.getObject(), model);
+                        }
                     }
                 }
 
-                // Emit entity term (if belonging to DBpedia)
-                if (entity instanceof URI) {
-                    final URI uri = (URI) entity;
-                    if (uri.getNamespace().equals("http://dbpedia.org/resource/")) {
-                        builder.addTerm("uri", uri.getLocalName(), numMentions, numMentions);
+                // Emit terms for each layer (for each term: frequency=1, weight=1/#terms in layer)
+                emitTerms(builder, "uri", uris);
+                emitTerms(builder, "type", types);
+                emitTerms(builder, "frame", frames);
+                emitTerms(builder, "time", times);
+            }
+        }
+
+        private static String format(final URI uri) {
+            final String ns = uri.getNamespace();
+            String prefix = Namespaces.DEFAULT.prefixFor(ns);
+            if (prefix == null) {
+                // Generate a prefix using a hash of the namespace. A prefix is mandatory as we
+                // had problems with Lucene if we fed it with <...> terms.
+                prefix = Hash.murmur3(ns).toString();
+            }
+            return prefix + ":" + uri.getLocalName();
+        }
+
+        private static void emitTerms(final TermVector.Builder sink, final String termLayer,
+                final Collection<String> termValues) {
+            final double weight = 1.0 / termValues.size();
+            for (final String termValue : termValues) {
+                sink.addTerm(termLayer, termValue, 1, weight);
+            }
+        }
+
+        private static void extractTimeComponents(final Collection<String> sink,
+                final Literal literal) {
+
+            // Determine which date components are available in the literal value
+            final URI dt = literal.getDatatype();
+            final boolean hasTime = dt.equals(XMLSchema.DATETIME);
+            final boolean hasDay = hasTime || dt.equals(XMLSchema.DATE);
+            final boolean hasMonth = hasDay || dt.equals(XMLSchema.GYEARMONTH);
+            final boolean hasYear = hasMonth || dt.equals(XMLSchema.GYEAR);
+
+            // Abort if there is no year component (=> there are no other components)
+            if (!hasYear) {
+                return;
+            }
+
+            try {
+                // Strategy 1: rely on Sesame to parse the datetime value
+                final XMLGregorianCalendar value = literal.calendarValue();
+                final int year = value.getYear();
+                sink.add("century:" + year / 100);
+                sink.add("decade:" + year / 10);
+                sink.add("year:" + year);
+                if (hasMonth) {
+                    final int month = value.getMonth();
+                    sink.add("month:" + year + "-" + month);
+                    if (hasDay) {
+                        final int day = value.getDay();
+                        sink.add("day:" + year + "-" + month + "-" + day);
                     }
                 }
 
-                // Emit type terms
-                for (final URI type : types) {
-                    final double weight = (double) numMentions / types.size();
-                    builder.addTerm("type", type.getLocalName(), numMentions, weight);
-                }
-
-                // Emit time components
-                if (!times.isEmpty()) {
-                    final Set<String> set = ImmutableSet.copyOf(times);
-                    final double weight = (double) numMentions / set.size();
-                    for (final String element : set) {
-                        builder.addTerm("time", element, numMentions, weight);
-                    }
+            } catch (final Throwable ex) {
+                try {
+                    // Strategy 2: assume format "YYYY-MM-DD"
+                    final String label = literal.getLabel();
+                    final Integer year = Integer.parseInt(label.substring(0, 4));
+                    sink.add("century:" + year / 100);
+                    sink.add("decade:" + year / 10);
+                    sink.add("year:" + year);
+                    final Integer month = Integer.parseInt(label.substring(5, 7));
+                    sink.add("month:" + year + "-" + month);
+                    final Integer day = Integer.parseInt(label.substring(8, 10));
+                    sink.add("day:" + year + "-" + month + "-" + day);
+                } catch (final Throwable ex2) {
+                    ex2.addSuppressed(ex);
+                    LOGGER.warn("Could not extract date components from literal " + literal, ex2);
                 }
             }
         }
 
-        private static void getDateComponents(final Literal literal, final List<String> centuries,
-                final List<String> decades, final List<String> years, final List<String> months,
-                final List<String> days) {
+        private static void extractTimeComponents(final Collection<String> sink,
+                final Resource owltimeDesc, final QuadModel model) {
 
             try {
-                if (!literal.getDatatype().equals(XMLSchema.DATETIME)) {
-
-                    final XMLGregorianCalendar calendarValue = literal.calendarValue();
-                    final Integer day = calendarValue.getDay();
-                    final Integer month = calendarValue.getMonth();
-                    final Integer year = calendarValue.getYear();
-                    final Integer decade = year / 10;
-                    final Integer century = year / 100;
-
-                    if (literal.getDatatype().equals(XMLSchema.DATE)) {
-                        centuries.add("century:" + century);
-                        decades.add("decade:" + decade);
-                        years.add("year:" + year);
-                        months.add("month:" + year + "-" + month);
-                        days.add("day:" + year + "-" + month + "-" + day);
+                // Lookup year, month and day, in this order, and generate corresponding terms
+                final Literal yearLit = model.filter(owltimeDesc, OWLTIME_YEAR, null)
+                        .objectLiteral();
+                if (yearLit != null) {
+                    final int year = yearLit.intValue();
+                    sink.add("century:" + year / 100);
+                    sink.add("decade:" + year / 10);
+                    sink.add("year:" + year);
+                    final Literal monthLit = model.filter(owltimeDesc, OWLTIME_MONTH, null)
+                            .objectLiteral();
+                    if (monthLit != null) {
+                        final int month = monthLit.intValue();
+                        sink.add("month:" + year + "-" + month);
+                        final Literal dayLit = model.filter(owltimeDesc, OWLTIME_DAY, null)
+                                .objectLiteral();
+                        if (dayLit != null) {
+                            final int day = dayLit.intValue();
+                            sink.add("day:" + year + "-" + month + "-" + day);
+                        }
                     }
-
-                    if (literal.getDatatype().equals(XMLSchema.GYEARMONTH)) {
-                        centuries.add("century:" + century);
-                        decades.add("decade:" + decade);
-                        years.add("year:" + year);
-                        months.add("month:" + year + "-" + month);
-                    }
-
-                    if (literal.getDatatype().equals(XMLSchema.GYEAR)) {
-                        centuries.add("century:" + century);
-                        decades.add("decade:" + decade);
-                        years.add("year:" + year);
-                    }
-
-                } else {
-                    final Integer year = Integer.parseInt(literal.stringValue().substring(0, 4));
-                    final Integer month = Integer.parseInt(literal.stringValue().substring(5, 7));
-                    final Integer day = Integer.parseInt(literal.stringValue().substring(8, 10));
-                    final Integer decade = year / 10;
-                    final Integer century = year / 100;
-
-                    centuries.add("century:" + century);
-                    decades.add("decade:" + decade);
-                    years.add("year:" + year);
-                    months.add("month:" + year + "-" + month);
-                    days.add("day:" + year + "-" + month + "-" + day);
                 }
+
             } catch (final Throwable ex) {
-                // Ignore
-                LOGGER.warn("Could not extract date components from " + literal, ex);
+                // Log and ignore
+                LOGGER.warn("Could not extract date components from OWL Time description "
+                        + owltimeDesc, ex);
             }
         }
 

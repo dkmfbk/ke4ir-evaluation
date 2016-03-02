@@ -31,8 +31,8 @@ import eu.fbk.rdfpro.RDFSources;
 import eu.fbk.rdfpro.util.QuadModel;
 
 /**
- * Enriches a document or query knowledge graph before it is analyzed for extracting semantic
- * terms.
+ * Enriches a knowledge graph extracted from a document or query before it is analyzed for
+ * extracting semantic terms.
  *
  * <p>
  * Enrichment is performed by calling method {@link #enrich(QuadModel)} and consists in adding
@@ -64,7 +64,8 @@ public abstract class Enricher {
     public abstract void enrich(QuadModel model);
 
     /**
-     * {@inheritDoc} Emits a descriptive string describe the Enricher and its options.
+     * {@inheritDoc} Emits a descriptive string describe the Enricher and its configuration. This
+     * implementation emits the class name.
      */
     @Override
     public String toString() {
@@ -142,14 +143,16 @@ public abstract class Enricher {
      * property Y.X). The path parameter is used as the base directory for resolving relative
      * paths contained in the examined properties. The properties currently supported are:
      * <ul>
+     * <li>{@code type} - a space-separated list of types of {@code Enricher} to configure;
+     * supported values are {@code uri} for {@link #createURIEnricher(Path, Iterable, Iterable)}
+     * and {@code rdfs} for {@link #createRDFSEnricher()} (if both are specified, they are
+     * concatenated in a single {@code Enricher});</li>
      * <li>{@code uri.index} - if specified, a URI enricher is configured loading the associated
      * index from the path used as value of the property;</li>
      * <li>{@code uri.recursion} - a space-separated list of namespace URI strings controlling for
      * which URIs recursive URI enrichment should be enabled;</li>
      * <li>{@code uri.norecursion} - a space-separated list of namespace URI strings controlling
      * for which URIs non-recursive URI enrichment should be enabled;</li>
-     * <li>{@code rdfs} - if set to true, it will append an RDFS enricher (see
-     * {@link #createRDFSEnricher()}) as the final enrichment step;</li>
      * </ul>
      *
      * @param root
@@ -158,7 +161,7 @@ public abstract class Enricher {
      *            the configuration properties
      * @param prefix
      *            an optional prefix to prepend to supported properties
-     * @return an enricher adhering to the specified configuration (upon success)
+     * @return an {@code Enricher} based on the specified configuration (if successful)
      */
     public static Enricher create(final Path root, final Properties properties,
             @Nullable String prefix) {
@@ -169,9 +172,13 @@ public abstract class Enricher {
         // Build a list of enrichers to be later combined
         final List<Enricher> enrichers = new ArrayList<>();
 
+        // Retrieve the types of analyzer enabled in the configuration
+        final Set<String> types = ImmutableSet.copyOf(properties.getProperty(prefix + "type", "")
+                .split("\\s+"));
+
         // Add an enricher adding triples about certain URIs, possibly recursively
-        final String uriIndexPath = properties.getProperty(prefix + "uri.index");
-        if (uriIndexPath != null) {
+        if (types.contains("uri")) {
+            final String uriIndexPath = properties.getProperty(prefix + "uri.index");
             final Set<String> recursionNS = ImmutableSet.copyOf(properties.getProperty(
                     prefix + "uri.recursion", "").split("\\s+"));
             final Set<String> noRecursionNS = ImmutableSet.copyOf(properties.getProperty(
@@ -183,7 +190,7 @@ public abstract class Enricher {
         }
 
         // Add an enricher computing the RDFS closure of the model, if enabled
-        if (Boolean.parseBoolean(properties.getProperty(prefix + "rdfs", "false"))) {
+        if (types.contains("rdfs")) {
             enrichers.add(createRDFSEnricher());
         }
 

@@ -12,10 +12,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -23,24 +21,13 @@ import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import javax.annotation.Nullable;
-
-import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
-import com.google.common.collect.HashMultimap;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Multimap;
-import com.google.common.collect.Ordering;
-import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
-import com.google.common.primitives.Doubles;
 
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.document.Document;
@@ -51,18 +38,11 @@ import org.apache.lucene.index.FieldInvertState;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
-import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.LeafReaderContext;
-import org.apache.lucene.index.TermContext;
-import org.apache.lucene.queryparser.classic.ParseException;
-import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.CollectionStatistics;
 import org.apache.lucene.search.Explanation;
 import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.Query;
-import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TermStatistics;
-import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
@@ -116,12 +96,9 @@ public class PikesIR {
 
     private final List<String> layers;
 
-    private final Set<Set<String>> layerFocus;
+    private final Set<String> baselineLayers;
 
     private final RankingScore.Measure sortMeasure;
-
-    @Nullable
-    private final Integer sortMeasureAtNumber;
 
     private final Enricher enricher;
 
@@ -136,6 +113,9 @@ public class PikesIR {
             final CommandLine cmd = CommandLine
                     .parser()
                     .withName("pikesir")
+                    .withOption("c", "configuration", "specifies the PATH to the JavaScript " //
+                            + "configuration file (default: configuration.js)", "PATH",
+                            CommandLine.Type.FILE_EXISTING, true, false, false)
                     .withOption("p", "properties", "specifies the configuration properties file",
                             "PATH", CommandLine.Type.FILE_EXISTING, true, false, false)
                     .withOption("e", "enrich", "enriches the RDF of both documents and queries")
@@ -170,6 +150,7 @@ public class PikesIR {
             }
 
             // Read properties
+            final long ts = System.currentTimeMillis();
             final Properties properties = new Properties();
             try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(propertiesPath.toString())))) {
                 properties.load(reader);
@@ -187,8 +168,29 @@ public class PikesIR {
             index |= Boolean.parseBoolean(properties.getProperty(pr + "index", "false"));
             search |= Boolean.parseBoolean(properties.getProperty(pr + "search", "false"));
 
-            mainHelper(propertiesPath.getParent(), properties, enrichQueries, enrichDocs,
-                    analyzeQueries, analyzeDocs, index, search);
+            // Initialize the PikesIR main object
+            final PikesIR pikesIR = new PikesIR(propertiesPath.getParent(), properties, "pikesir.");
+            LOGGER.info("Initialized in {} ms", System.currentTimeMillis() - ts);
+
+            // Perform the requested operations
+            if (enrichQueries) {
+                pikesIR.enrichQueries();
+            }
+            if (enrichDocs) {
+                pikesIR.enrichDocs();
+            }
+            if (analyzeQueries) {
+                pikesIR.analyzeQueries();
+            }
+            if (analyzeDocs) {
+                pikesIR.analyzeDocs();
+            }
+            if (index) {
+                pikesIR.index();
+            }
+            if (search) {
+                pikesIR.search();
+            }
 
             //            final List<String> data = Lists.newArrayList();
             //            for (int j = 0; j <= 100; ++j) {
@@ -209,35 +211,6 @@ public class PikesIR {
         } catch (final Throwable ex) {
             // Display error information and terminate
             CommandLine.fail(ex);
-        }
-    }
-
-    private static void mainHelper(final Path root, final Properties properties,
-            final boolean enrichQueries, final boolean enrichDocs, final boolean analyzeQueries,
-            final boolean analyzeDocs, final boolean index, final boolean search)
-            throws IOException {
-
-        // Initialize the PikesIR main object
-        final PikesIR pikesIR = new PikesIR(root, properties, "pikesir.");
-
-        // Perform the requested operations
-        if (enrichQueries) {
-            pikesIR.enrichQueries();
-        }
-        if (enrichDocs) {
-            pikesIR.enrichDocs();
-        }
-        if (analyzeQueries) {
-            pikesIR.analyzeQueries();
-        }
-        if (analyzeDocs) {
-            pikesIR.analyzeDocs();
-        }
-        if (index) {
-            pikesIR.index();
-        }
-        if (search) {
-            pikesIR.search();
         }
     }
 
@@ -275,22 +248,13 @@ public class PikesIR {
         this.layers = Splitter.on(Pattern.compile("[\\s,;]+")).trimResults().omitEmptyStrings()
                 .splitToList(properties.getProperty(pr + "layers"));
 
-        // Retrieve the layer combinations we focus on
-        this.layerFocus = Sets.newHashSet();
-        for (final String spec : Splitter.on(';').trimResults().omitEmptyStrings()
-                .split(properties.getProperty(pr + "results.focus", ""))) {
-            this.layerFocus.add(ImmutableSet.copyOf(Splitter.on(',').trimResults()
-                    .omitEmptyStrings().split(spec)));
-        }
-
         // Retrieve sort preferences
-        final String sortSpec = properties.getProperty(pr + "results.sort", "map").trim()
-                .toUpperCase();
-        final int index = sortSpec.indexOf('@');
-        this.sortMeasure = RankingScore.Measure.valueOf(index < 0 ? sortSpec : sortSpec.substring(
-                0, index));
-        this.sortMeasureAtNumber = index < 0 ? null : Integer.parseInt(sortSpec
-                .substring(index + 1));
+        this.sortMeasure = RankingScore.Measure.create(properties.getProperty(pr + "results.sort",
+                "map").trim());
+
+        // Retrieve baseline layers
+        this.baselineLayers = ImmutableSet.copyOf(properties.getProperty(pr + "results.baseline",
+                "textual").split("\\s+"));
 
         // Build the enricher
         this.enricher = Enricher.create(root, properties, "pikesir.enricher.");
@@ -299,10 +263,9 @@ public class PikesIR {
         this.analyzer = Analyzer.create(root, properties, "pikesir.analyzer.");
 
         // Build the ranker
-        this.ranker = Ranker.createTfIdfRanker(0.5f);
+        this.ranker = Ranker.create(root, properties, "pikesir.ranker.");
 
         // Report configuration
-        LOGGER.info("Focus on layer combinations: " + Joiner.on(' ').join(this.layerFocus));
         LOGGER.info("Using enricher: {}", this.enricher);
         LOGGER.info("Using analyzer: {}", this.analyzer);
         LOGGER.info("Using ranker: {}", this.ranker);
@@ -459,157 +422,19 @@ public class PikesIR {
         final Map<String, Map<String, Double>> rels = readRelevances(this.pathQueriesRelevances);
 
         // Read queries
-        Map<String, TermVector> queries = Maps.newHashMap();
-        try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(this.pathQueriesTerms
-                .toAbsolutePath().toString())))) {
-            queries = TermVector.read(reader);
-        }
-
-        // Materialize all possible layer combinations and associated evaluators
-        final String[][] settings = new String[(1 << this.layers.size()) - 1][];
-        final boolean[] settingsFocus = new boolean[settings.length];
-        for (int i = 0; i < settings.length; ++i) {
-            int index = 0;
-            settings[i] = new String[Integer.bitCount(i + 1)];
-            for (int j = 0; j < this.layers.size(); ++j) {
-                if ((i + 1 & 1 << j) != 0) {
-                    settings[i][index++] = this.layers.get(j);
-                }
-            }
-            settingsFocus[i] = this.layerFocus.contains(ImmutableSet.copyOf(settings[i]));
-        }
+        final Map<String, TermVector> queries = readQueries(this.pathQueriesTerms);
 
         // Create results directory if necessary and wipe out existing content
         initDir(this.pathResults);
 
-        // Open the index for read and evaluate all the queries in parallel
-        final List<QueryEvaluation> evaluations = Lists.newArrayList();
         try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex))) {
             final IndexSearcher searcher = new IndexSearcher(reader);
             searcher.setSimilarity(FakeSimilarity.INSTANCE);
-            final Ranker.Stats stats = searchStats(searcher, queries.values());
-            final Map<Integer, String> docIDs = Maps.newConcurrentMap();
-            final Map<String, TermVector> docVectors = Maps.newConcurrentMap();
-            for (final String queryID : Ordering.natural().sortedCopy(queries.keySet())) {
-                evaluations.add(new QueryEvaluation(searcher, queryID, queries.get(queryID),
-                        docIDs, docVectors, stats, rels.get(queryID), settings));
-            }
-            Environment.run(evaluations);
-        }
-
-        // Compute aggregated scores and sort them
-        final Map<RankingScore, String[]> aggregateScores = Maps.newIdentityHashMap();
-        for (int i = 0; i < settings.length; ++i) {
-            final List<RankingScore> scores = Lists.newArrayList();
-            for (final QueryEvaluation evaluation : evaluations) {
-                scores.add(evaluation.scores[i]);
-            }
-            aggregateScores.put(RankingScore.average(scores), settings[i]);
-        }
-        final List<RankingScore> sortedScores = RankingScore.comparator(this.sortMeasure,
-                this.sortMeasureAtNumber, true).sortedCopy(aggregateScores.keySet());
-
-        // Write aggregate scores
-        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
-                .resolve("aggregates.csv").toAbsolutePath().toString())))) {
-            writer.append("layers;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10\n");
-            for (final RankingScore score : sortedScores) {
-                writer.append(Joiner.on(",").join(aggregateScores.get(score))).append(";")
-                        .append(formatRankingScore(score, ";")).append("\n");
-            }
-        }
-
-        // Write reports for the settings we focus on
-        for (int i = 0; i < settings.length; ++i) {
-            if (settingsFocus[i]) {
-                try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
-                        .resolve("queries-" + Joiner.on('-').join(settings[i]) + ".csv")
-                        .toAbsolutePath().toString())))) {
-                    writer.append("query;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10\n");
-                    for (final QueryEvaluation evaluation : evaluations) {
-                        writer.append(evaluation.queryID).append(';')
-                                .append(formatRankingScore(evaluation.scores[i], ";"))
-                                .append('\n');
-                    }
-                }
-            }
-        }
-
-        // Report top aggregate scores
-        if (LOGGER.isInfoEnabled()) {
-            final StringBuilder builder = new StringBuilder("Top scores:");
-            for (int i = 0; i < Math.min(100, sortedScores.size()); ++i) {
-                final RankingScore score = sortedScores.get(i);
-                builder.append(String.format("\n  %-40s - p@1=%.3f p@3=%.3f p@5=%.3f p@10=%.3f "
-                        + "mrr=%.3f ndcg=%.3f ndcg@10=%.3f map=%.3f map@10=%.3f", Joiner.on(',')
-                        .join(aggregateScores.get(score)), score.getPrecision(1), score
-                        .getPrecision(3), score.getPrecision(5), score.getPrecision(10), score
-                        .getMRR(), score.getNDCG(), score.getNDCG(10), score.getMAP(), score
-                        .getMAP(10)));
-            }
-            LOGGER.info(builder.toString());
+            new Evaluation(searcher, this.ranker, this.layers, this.baselineLayers,
+                    this.sortMeasure).run(queries, rels, this.pathResults);
         }
 
         LOGGER.info("Done in {} ms", System.currentTimeMillis() - ts);
-    }
-
-    private Ranker.Stats searchStats(final IndexSearcher searcher,
-            final Iterable<TermVector> queryVectors) throws IOException {
-
-        // Retrieve statistics for all the configured layers
-        final Map<String, CollectionStatistics> layerStats = Maps.newHashMap();
-        for (final String layer : this.layers) {
-            layerStats.put(layer, searcher.collectionStatistics(layer));
-        }
-
-        // Retrieve statistics for all the terms appearing in queries
-        final Map<Term, TermStatistics> termStats = Maps.newHashMap();
-        for (final TermVector queryVector : queryVectors) {
-            for (final Term term : queryVector.getTerms()) {
-                if (!termStats.containsKey(term)) {
-                    final String layer = term.getField();
-                    final String value = term.getValue();
-                    final org.apache.lucene.index.Term luceneTerm;
-                    luceneTerm = new org.apache.lucene.index.Term(layer, value);
-                    termStats.put(term, searcher.termStatistics(luceneTerm, //
-                            TermContext.build(searcher.getTopReaderContext(), luceneTerm)));
-                }
-            }
-        }
-
-        // Build and return the Stats that will be supplied to the Ranker
-        return new Ranker.Stats(layerStats, termStats);
-    }
-
-    private static TermVector toTermVector(final Document document) {
-        final TermVector.Builder builder = TermVector.builder();
-        for (final IndexableField field : document.getFields()) {
-            final String name = field.name();
-            if (!"id".equals(name)) {
-                final String value = field.stringValue();
-                try {
-                    builder.addTerm(name, value);
-                } catch (final Throwable ex) {
-                    // Ignore
-                }
-            }
-        }
-        final TermVector vector = builder.build();
-        return vector;
-    }
-
-    private static String formatRankingScore(final RankingScore score, final String separator) {
-        final StringBuilder builder = new StringBuilder();
-        builder.append(score.getPrecision(1)).append(separator);
-        builder.append(score.getPrecision(3)).append(separator);
-        builder.append(score.getPrecision(5)).append(separator);
-        builder.append(score.getPrecision(10)).append(separator);
-        builder.append(score.getMRR()).append(separator);
-        builder.append(score.getNDCG()).append(separator);
-        builder.append(score.getNDCG(10)).append(separator);
-        builder.append(score.getMAP()).append(separator);
-        builder.append(score.getMAP(10));
-        return builder.toString();
     }
 
     private static Map<String, Map<String, Double>> readRelevances(final Path path)
@@ -631,6 +456,14 @@ public class PikesIR {
             }
         }
         return rels;
+    }
+
+    private static Map<String, TermVector> readQueries(final Path path) throws IOException {
+        Map<String, TermVector> queries = Maps.newHashMap();
+        try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(path.toAbsolutePath().toString())))) {
+            queries = TermVector.read(reader);
+        }
+        return queries;
     }
 
     private static QuadModel readTriples(final Path path) throws IOException {
@@ -720,278 +553,6 @@ public class PikesIR {
         });
     }
 
-    private final class QueryEvaluation implements Runnable {
-
-        // Input
-
-        final IndexSearcher searcher;
-
-        final String queryID;
-
-        final TermVector queryVector;
-
-        final Map<Integer, String> cachedDocumentIDs;
-
-        final Map<String, TermVector> cachedDocumentVectors;
-
-        final Ranker.Stats stats;
-
-        final Map<String, Double> rels;
-
-        final String[][] settings;
-
-        // Output
-
-        final Hit[][] hits; // a Hit[] for each setting
-
-        final RankingScore[] scores; // a RankingScore for each setting
-
-        QueryEvaluation(final IndexSearcher searcher, final String queryID,
-                final TermVector queryVector, final Map<Integer, String> cachedDocumentIDs,
-                final Map<String, TermVector> cachedDocumentVectors, final Ranker.Stats stats,
-                final Map<String, Double> rels, final String[][] settings) {
-
-            this.searcher = searcher;
-            this.queryID = queryID;
-            this.queryVector = queryVector;
-            this.cachedDocumentIDs = cachedDocumentIDs;
-            this.cachedDocumentVectors = cachedDocumentVectors;
-            this.stats = stats;
-            this.rels = rels;
-            this.settings = settings;
-            this.hits = new Hit[settings.length][];
-            this.scores = new RankingScore[settings.length];
-        }
-
-        @Override
-        public void run() {
-
-            try {
-                // Identify matching documents using boolean model (delegated to Lucene, OR semantics)
-                final Multimap<String, String> matches = matchDocuments();
-
-                // Compute and evaluate rankings for each setting
-                rankDocuments(matches);
-
-                // Write the CSV file reporting ranking score and top 10 hits for each setting
-                writeSettingScores();
-
-                // Write the CSV file reporting top documents retrieved for each layer
-                writeLayerScores();
-
-                // Log number of hits and best ranking, if enabled
-                logCompletion();
-
-            } catch (final Throwable ex) {
-                // Wrap and propagate
-                throw Throwables.propagate(ex);
-            }
-        }
-
-        private Multimap<String, String> matchDocuments() throws IOException, ParseException {
-
-            // Evaluate a Lucene query for each layer and populate a multimap with matched document IDs
-            final Multimap<String, String> matches = HashMultimap.create();
-            for (final String layer : PikesIR.this.layers) {
-
-                // Compose the query string
-                final StringBuilder builder = new StringBuilder();
-                String separator = "";
-                for (final Term term : this.queryVector.getTerms(layer)) {
-                    builder.append(separator);
-                    builder.append(layer).append(":\"").append(term.getValue()).append("\"");
-                    separator = " OR ";
-                }
-                final String queryString = builder.toString();
-
-                // Skip evaluation if the query is empty
-                if (queryString.isEmpty()) {
-                    continue;
-                }
-
-                // Evaluate the query
-                final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
-                final Query query = parser.parse(queryString);
-                final TopDocs results = this.searcher.search(query, 1000);
-                LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length,
-                        queryString);
-
-                // Populate the matches multimap. This requires mapping the numerical doc ID to
-                // the corresponding String one. We also retrieve the associated Lucene document
-                // and cache the document term vector for later reuse.
-                for (final ScoreDoc scoreDoc : results.scoreDocs) {
-                    String docID;
-                    synchronized (this.cachedDocumentIDs) {
-                        docID = this.cachedDocumentIDs.get(scoreDoc.doc);
-                        if (docID == null) {
-                            final Document doc = this.searcher.doc(scoreDoc.doc);
-                            docID = doc.get("id");
-                            this.cachedDocumentIDs.put(scoreDoc.doc, docID);
-                            this.cachedDocumentVectors.put(docID, toTermVector(doc));
-                        }
-                    }
-                    matches.put(layer, docID);
-                }
-            }
-            return matches;
-        }
-
-        private void rankDocuments(final Multimap<String, String> matches) {
-
-            // Compute and evaluate a ranking for each considered setting
-            for (int i = 0; i < this.settings.length; ++i) {
-
-                // Retrieve the current setting
-                final String[] setting = this.settings[i];
-
-                // Obtain all the IDs of matching document for this setting
-                final Set<String> documentIDs = Sets.newLinkedHashSet();
-                for (final String layer : setting) {
-                    documentIDs.addAll(matches.get(layer));
-                }
-
-                if (documentIDs.isEmpty()) {
-                    // Update ranking scores by comparing an empty answer with gold relevances
-                    this.hits[i] = new Hit[0];
-                    this.scores[i] = RankingScore.evaluator(10) //
-                            .add(ImmutableList.of(), this.rels).get();
-
-                } else {
-                    // Apply the ranker to compute a score for each matched document
-                    final String[] ids = documentIDs.toArray(new String[documentIDs.size()]);
-                    final TermVector[] vectors = new TermVector[ids.length];
-                    for (int j = 0; j < ids.length; ++j) {
-                        vectors[j] = this.cachedDocumentVectors.get(ids[j]);
-                    }
-                    final float[] scores = PikesIR.this.ranker.rank(
-                            this.queryVector.project(Arrays.asList(setting)), vectors, this.stats);
-
-                    // Build and store a sorted list of Hit objects
-                    final Hit[] hits = new Hit[ids.length];
-                    for (int j = 0; j < ids.length; ++j) {
-                        hits[j] = new Hit(ids[j], scores[j]);
-                    }
-                    Arrays.sort(hits);
-                    this.hits[i] = hits;
-
-                    // Update ranking scores based on the obtained Hit list
-                    final String[] idsSorted = new String[ids.length];
-                    final Map<String, Double> scoresMap = Maps.newHashMap();
-                    for (int j = 0; j < hits.length; ++j) {
-                        idsSorted[j] = hits[j].documentID;
-                        scoresMap.put(hits[j].documentID, (double) hits[j].score);
-                    }
-                    this.scores[i] = RankingScore.evaluator(10)
-                            .add(Arrays.asList(idsSorted), scoresMap, this.rels).get();
-                }
-            }
-        }
-
-        private void writeSettingScores() throws IOException {
-
-            // Build a map from ranking scores to the setting index
-            final Map<RankingScore, Integer> map = Maps.newHashMap();
-            for (int i = 0; i < this.settings.length; ++i) {
-                map.put(this.scores[i], i);
-            }
-
-            // Write file, sorting scores from best to worst and using map to obtain settings & hits
-            try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(PikesIR.this.pathResults
-                    .resolve(this.queryID + ".csv").toAbsolutePath().toString())))) {
-                writer.append("layers;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10;"
-                        + "ranking (top 10)\n");
-                for (final RankingScore score : RankingScore.comparator(PikesIR.this.sortMeasure,
-                        PikesIR.this.sortMeasureAtNumber, true).sortedCopy(
-                        Arrays.asList(this.scores))) {
-                    final int index = map.get(score);
-                    writer.append(Joiner.on(',').join(this.settings[index]));
-                    writer.append(';');
-                    writer.append(formatRankingScore(score, ";"));
-                    writer.append(';');
-                    writer.append(Joiner.on(",").join(
-                            Iterables.limit(Arrays.asList(this.hits[index]), 10)));
-                    writer.append('\n');
-                }
-            }
-        }
-
-        private void writeLayerScores() throws IOException {
-
-            // Identify layers, associated documents and max number of documents
-            int numHits = 0;
-            final List<String> layers = Lists.newArrayList();
-            final List<Hit[]> sortedHits = Lists.newArrayList();
-            for (int i = 0; i < this.settings.length; ++i) {
-                if (this.settings[i].length == 1) {
-                    layers.add(this.settings[i][0]);
-                    sortedHits.add(this.hits[i]);
-                    numHits = Math.max(numHits, this.hits[i].length);
-                }
-            }
-
-            // Write file
-            try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(PikesIR.this.pathResults
-                    .resolve(this.queryID + "-rank.csv").toAbsolutePath().toString())))) {
-
-                // Write header
-                for (final String layer : layers) {
-                    writer.append(layer).append(";;;");
-                }
-                writer.append(";;\n");
-
-                // Write rows
-                final int numLayers = layers.size();
-                final int numRows = Math.min(50, numHits);
-                final String[] rowIDs = new String[numLayers];
-                final double[] rowScores = new double[numLayers];
-                for (int i = 0; i < numRows; ++i) {
-                    for (int j = 0; j < numLayers; ++j) {
-                        final Hit[] hits = sortedHits.get(j);
-                        final Hit hit = i < hits.length ? sortedHits.get(j)[i] : null;
-                        rowIDs[j] = hit == null ? null : hit.documentID;
-                        rowScores[j] = hit == null ? 0.0 : hit.score;
-                    }
-                    if (Doubles.max(rowScores) == 0.0) {
-                        break;
-                    }
-                    for (int j = 0; j < numLayers; ++j) {
-                        final double score = rowScores[j];
-                        if (score == 0.0) {
-                            writer.append(";;;");
-                        } else {
-                            final String id = rowIDs[j];
-                            final Double rel = this.rels.get(id);
-                            writer.append(id).append(rel == null ? "" : " (" + rel + ")")
-                                    .append(';').append(Double.toString(score)).append(";;");
-                        }
-                    }
-                    writer.append("\n");
-                }
-            }
-        }
-
-        private void logCompletion() {
-
-            if (LOGGER.isInfoEnabled()) {
-                int bestIndex = -1;
-                int numHits = 0;
-                for (int i = 0; i < this.settings.length; ++i) {
-                    numHits = Math.max(numHits, this.hits[i].length);
-                    if (bestIndex < 0
-                            || RankingScore.comparator(PikesIR.this.sortMeasure,
-                                    PikesIR.this.sortMeasureAtNumber, true).compare(
-                                    this.scores[i], this.scores[bestIndex]) <= 0) {
-                        bestIndex = i;
-                    }
-                }
-                LOGGER.info("Evaluated {} - {} hits, best: {} {}", this.queryID, String.format(
-                        "%4d", numHits), this.scores[bestIndex],
-                        Joiner.on(',').join(this.settings[bestIndex]));
-            }
-        }
-
-    }
-
     private static final class FakeSimilarity extends Similarity {
 
         public static final FakeSimilarity INSTANCE = new FakeSimilarity();
@@ -1053,54 +614,6 @@ public class PikesIR {
                 return 1.0f;
             }
 
-        }
-
-    }
-
-    private static final class Hit implements Comparable<Hit> {
-
-        final String documentID;
-
-        final float score;
-
-        Hit(final String documentID, final float score) {
-            this.documentID = Objects.requireNonNull(documentID);
-            this.score = score;
-        }
-
-        @Override
-        public int compareTo(final Hit other) {
-            int result = Double.compare(other.score, this.score);
-            if (result == 0) {
-                result = -this.documentID.compareTo(other.documentID);
-            }
-            return result;
-        }
-
-        @Override
-        public boolean equals(final Object object) {
-            if (object == this) {
-                return true;
-            }
-            if (!(object instanceof Hit)) {
-                return false;
-            }
-            final Hit other = (Hit) object;
-            return this.documentID.equals(other.documentID);
-        }
-
-        @Override
-        public int hashCode() {
-            return this.documentID.hashCode();
-        }
-
-        @Override
-        public String toString() {
-            final StringBuilder builder = new StringBuilder();
-            builder.append(this.documentID);
-            builder.append(':');
-            builder.append(String.format("%.3f", this.score));
-            return builder.toString();
         }
 
     }
