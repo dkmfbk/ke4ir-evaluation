@@ -2,13 +2,14 @@ package eu.fbk.pikesir;
 
 import java.nio.file.Path;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 
-import com.google.common.base.Preconditions;
+import javax.annotation.Nullable;
+
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Sets;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Maps;
 
 import org.apache.lucene.search.CollectionStatistics;
 import org.apache.lucene.search.TermStatistics;
@@ -49,19 +50,26 @@ public abstract class Ranker {
 
     /**
      * Creates a {@code Ranker} that ranks documents w.r.t. a query based on a TF/IDF criterion. A
-     * weight is applied to each term to take into account its layer. The total weight of semantic
-     * layers is fixed and distributed evenly among them based on the actual layers available in
-     * the query. Parameter {@code textualLayer} allows to discriminate between textual and
-     * non-textual layers.
+     * weight is applied to each term to take into account its layer, according to the supplied
+     * layer-to-weight map. The optional parameter {@code rescaledLayers} list the layers for
+     * which the sum of weights must be guaranteed to be constant. If non-empty and the query does
+     * not have one of the layers in {@code rescaledLayers}, then the weight of the other layer in
+     * {@code rescaledLayers} is rescaled linearly so to guarantee that the sum of their new
+     * weights produces the expected sum. This mechanism can be used, e.g., to guarantee that the
+     * total weight assigned to <it>available</it> semantic layers is a certain constant (e.g.,
+     * 0.5).
      *
-     * @param textualLayer
-     *            the name of the textual layer
-     * @param semanticWeight
-     *            the total weight associated to semantic layers
+     * @param layerWeights
+     *            a layer-to-weight map; if a layer weight is missing in this map, it is assumed
+     *            to be 0
+     * @param rescaledLayers
+     *            the layers for which to apply the rescaling mechanism; leave empty in order not
+     *            to rescale anything
      * @return the created Ranker
      */
-    public static Ranker createTfIdfRanker(final String textualLayer, final float semanticWeight) {
-        return new TfIdfRanker(textualLayer, semanticWeight);
+    public static Ranker createTfIdfRanker(final Map<String, Float> layerWeights,
+            @Nullable final Iterable<String> rescaledLayers) {
+        return new TfIdfRanker(layerWeights, rescaledLayers);
     }
 
     /**
@@ -96,11 +104,17 @@ public abstract class Ranker {
         final String type = properties.getProperty(prefix + "type", "");
         switch (type) {
         case "tfidf":
-            final String textualLayer = properties.getProperty(prefix + "tfidf.textuallayer",
-                    "textual");
-            final float semanticWeight = Float.parseFloat(properties.getProperty(prefix
-                    + "tfidf.semanticweight", "0.5"));
-            return createTfIdfRanker(textualLayer, semanticWeight);
+            final Map<String, Float> layerWeights = Maps.newHashMap();
+            for (final String pair : properties.getProperty(prefix + "tfidf.weights", "").trim()
+                    .split("\\s+")) {
+                final int index = pair.indexOf(':');
+                final String layer = pair.substring(0, index).trim();
+                final float weight = Float.parseFloat(pair.substring(index + 1));
+                layerWeights.put(layer, weight);
+            }
+            final Set<String> rescaledLayers = ImmutableSet.copyOf(properties
+                    .getProperty(prefix + "tfidf.rescaling", "").trim().split("\\s+"));
+            return createTfIdfRanker(layerWeights, rescaledLayers);
 
         default:
             throw new IllegalArgumentException("Unsupported Ranker type: " + type);
@@ -109,30 +123,44 @@ public abstract class Ranker {
 
     private static final class TfIdfRanker extends Ranker {
 
-        private final String textualLayer;
+        private final Map<String, Float> layerWeights;
 
-        private final float semanticWeight;
+        private final Set<String> rescaledLayers;
 
-        public TfIdfRanker(final String textualLayer, final float semanticWeight) {
-            Preconditions.checkArgument(semanticWeight >= 0.0f && semanticWeight <= 1.0);
-            this.textualLayer = Objects.requireNonNull(textualLayer);
-            this.semanticWeight = semanticWeight;
+        public TfIdfRanker(final Map<String, Float> layerWeights,
+                @Nullable final Iterable<String> rescaledLayers) {
+            this.layerWeights = ImmutableMap.copyOf(layerWeights);
+            this.rescaledLayers = rescaledLayers == null ? ImmutableSet.of() : ImmutableSet
+                    .copyOf(rescaledLayers);
         }
 
         @Override
         public float[] rank(final TermVector queryVector, final TermVector[] docVectors,
                 final Statistics stats) {
 
-            // Retrieve the set of semantic layers available in the query
-            final Set<String> queryLayers = Sets.newHashSet();
-            for (final Term term : queryVector.getTerms()) {
-                if (!this.textualLayer.equals(term.getField())) {
-                    queryLayers.add(term.getField());
+            // Apply weight rescaling, if configured to do so
+            Map<String, Float> weights = this.layerWeights;
+            if (!this.rescaledLayers.isEmpty()) {
+                float sumBefore = 0.0f;
+                float sumAfter = 0.0f;
+                for (final String layer : this.rescaledLayers) {
+                    final float weight = weights.getOrDefault(layer, 0.0f);
+                    sumBefore += queryVector.getLayers().contains(layer) ? weight : 0.0f;
+                    sumAfter += weight;
+                }
+                if (sumBefore > 0.0f && sumBefore != sumAfter) {
+                    final float multiplier = sumAfter / sumBefore;
+                    weights = Maps.newHashMap(weights);
+                    for (final String layer : this.rescaledLayers) {
+                        weights.put(layer, weights.getOrDefault(layer, 0.0f) * multiplier);
+                    }
                 }
             }
 
+            // Retrieve the number of documents from Lucene statistics
             final long numDocs = stats.getNumDocuments();
 
+            // Allocate the array of document scores, one element for each document vector
             final float[] scores = new float[docVectors.length];
 
             // We compute the score of each document by iterating first on query terms (so that
@@ -140,12 +168,9 @@ public abstract class Ranker {
             // order of the two iterations is irrelevant.
             for (final Term queryTerm : queryVector.getTerms()) {
 
-                // Extract term layer and associated weight. Note that for semantic layers we
-                // divide the total semantic weight among the layers effectively available in the
-                // query, and NOT all the semantic layers used in the index
+                // Extract term layer and associated weight.
                 final String layer = queryTerm.getField();
-                final float weight = this.textualLayer.equals(layer) ? 1.0f - this.semanticWeight
-                        : this.semanticWeight / queryLayers.size();
+                final float weight = weights.getOrDefault(layer, 0.0f);
 
                 // Extract the document frequency (# documents having that term in the index)
                 final long docFreq = stats.getNumDocuments(queryTerm);
@@ -154,30 +179,20 @@ public abstract class Ranker {
                 // query term being currently considered
                 for (int i = 0; i < docVectors.length; ++i) {
 
-                    // Abort in case the document does not contain the query term
+                    // Skip in case the document does not contain the query term
                     final Term docTerm = docVectors[i].getTerm(layer, queryTerm.getValue());
                     if (docTerm == null) {
                         continue;
                     }
 
-                    // TODO
+                    // Extract required frequencies
+                    final double rfd = docTerm.getFrequency(); // raw frequency, document side
+                    final double nfq = queryTerm.getWeight(); // normalized frequency, query side
 
-                    // Compute TF document side (tfd), TF query side (tfq) and IDF
-
-                    //                    final float tfq;
-                    //                    if (layer.equals(this.textualLayer)) {
-                    //                        tfq = (float) (1.0 + Math.log(queryTerm.getWeight()));
-                    //                    } else {
-                    //                        tfq = (float) queryTerm.getWeight();
-                    //                    }
-
-                    final double freq = docTerm.getFrequency();
-                    final float tfd = freq <= 0.0f ? 0.0f : (float) (1.0 + Math.log(freq)); // paper
-                    final float tfq = (float) queryTerm.getWeight();
-                    final float idf = (float) Math.log(numDocs / (double) docFreq); // paper
-
-                    //                    final float tfd = (float) Math.sqrt(freq); // test and lucene
-                    //                    final float idf = (float) (Math.log(numDocs / (double) (docFreq + 1)) + 1.0); // test
+                    // Compute TF / IDF
+                    final float tfd = (float) (1.0 + Math.log(rfd)); // TF, document side
+                    final float tfq = (float) nfq; // TF, query side
+                    final float idf = (float) Math.log(numDocs / (double) docFreq); // IDF
 
                     // Update the document score
                     scores[i] += tfd * idf * idf * tfq * weight;
@@ -187,7 +202,6 @@ public abstract class Ranker {
             // Return the computed scores
             return scores;
         }
-
     }
 
     /**

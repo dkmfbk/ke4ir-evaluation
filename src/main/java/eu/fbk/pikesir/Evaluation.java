@@ -26,7 +26,6 @@ import com.google.common.primitives.Doubles;
 import org.apache.commons.math3.stat.inference.TTest;
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.document.Document;
-import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.TermContext;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
@@ -39,6 +38,7 @@ import org.apache.lucene.search.TopDocs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import eu.fbk.pikesir.util.ApproximateRandomization;
 import eu.fbk.pikesir.util.RankingScore;
 import eu.fbk.pikesir.util.RankingScore.Measure;
 import eu.fbk.rdfpro.util.Environment;
@@ -62,13 +62,18 @@ final class Evaluation {
 
     private final Measure sortMeasure;
 
+    private final String statisticalTest;
+
     private final String[][] settings;
 
     private final int baselineIndex;
 
+    private final Map<String, TermVector> documentVectors;
+
     public Evaluation(final IndexSearcher searcher, final Ranker ranker,
             final Iterable<String> layers, final Iterable<String> baselineLayers,
-            final Measure sortMeasure) {
+            final Measure sortMeasure, final String statisticalTest,
+            final Map<String, TermVector> documentVectors) {
 
         final List<String> layerList = ImmutableList.copyOf(layers);
         final String[][] settings = new String[(1 << layerList.size()) - 1][];
@@ -92,8 +97,10 @@ final class Evaluation {
         this.ranker = ranker;
         this.layers = layerList;
         this.sortMeasure = sortMeasure;
+        this.statisticalTest = statisticalTest;
         this.settings = settings;
         this.baselineIndex = baselineIndex;
+        this.documentVectors = documentVectors;
     }
 
     public void run(final Map<String, TermVector> queries,
@@ -106,10 +113,10 @@ final class Evaluation {
 
         final RankingScore[] scores = aggregateScores(evaluations);
 
-        final Map<Measure, float[]> pvalues = pairedTTest(evaluations);
+        final Map<Measure, float[]> pvalues = statisticalTest(evaluations);
 
         // Write aggregate scores
-        writeAggregateScores(resultPath, scores);
+        writeAggregateScores(resultPath, scores, pvalues);
 
         // Write a TSV file for each setting, listing the results obtained for each query
         for (int i = 0; i < this.settings.length; ++i) {
@@ -184,12 +191,16 @@ final class Evaluation {
         return scores;
     }
 
-    private Map<Measure, float[]> pairedTTest(final List<QueryEvaluation> evaluations) {
+    private Map<Measure, float[]> statisticalTest(final List<QueryEvaluation> evaluations) {
 
+        // Allocate a map mapping each measure to a vector of p-values (one for each setting)
         final Map<Measure, float[]> pvalues = Maps.newHashMap();
 
+        // Populate the map iterating over considred measures
         final int numQueries = evaluations.size();
         for (final Measure measure : REPORTED_MEASURES) {
+
+            // First, for each setting extract a vector of measure values, one per query
             final double[][] settingsValues = new double[this.settings.length][];
             for (int i = 0; i < this.settings.length; ++i) {
                 final double[] values = new double[numQueries];
@@ -198,31 +209,105 @@ final class Evaluation {
                     settingsValues[i] = values;
                 }
             }
+
+            // Then, build a vector of p-values, one for each setting for the considered measure
             final float[] pvals = new float[this.settings.length];
             final double[] baselineValues = settingsValues[this.baselineIndex];
-
             for (int i = 0; i < this.settings.length; ++i) {
-                final TTest test = new TTest();
-                pvals[i] = (float) test.pairedTTest(settingsValues[i], baselineValues);
+
+                // Count the number of values in baseline/setting vector that are NaN
+                int numNaNs = 0;
+                for (int j = 0; j < numQueries; ++j) {
+                    if (Double.isNaN(settingsValues[i][j]) || Double.isNaN(baselineValues[j])) {
+                        ++numNaNs;
+                    }
+                }
+
+                // Remove NaN values from baseline and setting vectors, if necessary
+                double[] baselineVector, settingVector;
+                if (numNaNs == 0) {
+                    baselineVector = baselineValues;
+                    settingVector = settingsValues[i];
+                } else {
+                    baselineVector = new double[numQueries - numNaNs];
+                    settingVector = new double[numQueries - numNaNs];
+                    for (int k = 0, j = 0; j < numQueries; ++j) {
+                        if (!Double.isNaN(settingsValues[i][j])
+                                && !Double.isNaN(baselineValues[j])) {
+                            baselineVector[k] = baselineValues[j];
+                            settingVector[k] = settingsValues[i][j];
+                            ++k;
+                        }
+                    }
+                }
+
+                // Perform the test and store the p-value
+                if ("ttest".equalsIgnoreCase(this.statisticalTest)) {
+                    pvals[i] = (float) new TTest().pairedTTest(baselineVector, settingVector);
+                } else if ("ar".equalsIgnoreCase(this.statisticalTest)) {
+                    pvals[i] = (float) ApproximateRandomization.test(1000, baselineVector,
+                            settingVector);
+                }
             }
+
+            // Store the p-value vector in the map
             pvalues.put(measure, pvals);
         }
 
+        // Return the p-value map
         return pvalues;
     }
 
-    private void writeAggregateScores(final Path resultPath, final RankingScore[] scores)
-            throws IOException {
+    private void writeAggregateScores(final Path resultPath, final RankingScore[] scores,
+            final Map<Measure, float[]> pvalues) throws IOException {
 
         final RankingScore[] sortedScores = scores.clone();
         final int[] indexes = sort(sortedScores, RankingScore.comparator(this.sortMeasure, true));
 
         try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(resultPath.resolve("aggregates.csv")
                 .toAbsolutePath().toString())))) {
-            writer.append("layers;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10\n");
+            writer.append("setting");
+            for (final Measure measure : REPORTED_MEASURES) {
+                writer.append(";").append(measure.toString()).append(";p-value");
+            }
+            writer.append("\n");
             for (int i = 0; i < sortedScores.length; ++i) {
-                writer.append(Joiner.on(",").join(this.settings[indexes[i]])).append(";")
-                        .append(formatRankingScore(sortedScores[i], ";")).append("\n");
+                writer.append(Joiner.on(",").join(this.settings[indexes[i]]));
+                for (final Measure measure : REPORTED_MEASURES) {
+                    writer.append(";").append(Double.toString(sortedScores[i].get(measure)));
+                    writer.append(";").append(Double.toString(pvalues.get(measure)[indexes[i]]));
+                }
+                writer.append("\n");
+            }
+        }
+    }
+
+    private void writeSettingScores(final Path resultPath,
+            final Iterable<QueryEvaluation> evaluations, final int settingIndex)
+            throws IOException {
+
+        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(resultPath
+                .resolve("setting-" + Joiner.on('-').join(this.settings[settingIndex]) + ".csv")
+                .toAbsolutePath().toString())))) {
+            writer.append("query");
+            for (final Measure measure : REPORTED_MEASURES) {
+                writer.append(";").append(measure.toString());
+            }
+            writer.append(";ranking (top 10);available query layers\n");
+            for (final QueryEvaluation evaluation : evaluations) {
+                final RankingScore score = evaluation.scores[settingIndex];
+                final List<String> queryLayers = Lists.newArrayList(this.settings[settingIndex]);
+                queryLayers.retainAll(evaluation.queryVector.getLayers());
+                writer.append(evaluation.queryID);
+                for (final Measure measure : REPORTED_MEASURES) {
+                    writer.append(";").append(Double.toString(score.get(measure)));
+                }
+                writer.append(';');
+                writer.append(Joiner.on(" ").join(
+                        Iterables.limit(Arrays.asList(evaluation.hits[settingIndex]), 10)));
+                writer.append(';');
+                writer.append(Joiner.on(" ").join(queryLayers));
+                writer.append('\n');
             }
         }
     }
@@ -238,18 +323,26 @@ final class Evaluation {
 
         // Write file, sorting scores from best to worst and using map to obtain settings & hits
         try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(resultPath
-                .resolve(evaluation.queryID + ".csv").toAbsolutePath().toString())))) {
-            writer.append("layers;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10;"
-                    + "ranking (top 10)\n");
+                .resolve("query-" + evaluation.queryID + ".csv").toAbsolutePath().toString())))) {
+            writer.append("setting");
+            for (final Measure measure : REPORTED_MEASURES) {
+                writer.append(";").append(measure.toString());
+            }
+            writer.append(";ranking (top 10);available query layers\n");
             for (final RankingScore score : RankingScore.comparator(this.sortMeasure, true)
                     .sortedCopy(Arrays.asList(evaluation.scores))) {
                 final int index = map.get(score);
+                final List<String> queryLayers = Lists.newArrayList(this.settings[index]);
+                queryLayers.retainAll(evaluation.queryVector.getLayers());
                 writer.append(Joiner.on(',').join(this.settings[index]));
+                for (final Measure measure : REPORTED_MEASURES) {
+                    writer.append(";").append(Double.toString(score.get(measure)));
+                }
                 writer.append(';');
-                writer.append(formatRankingScore(score, ";"));
-                writer.append(';');
-                writer.append(Joiner.on(",").join(
+                writer.append(Joiner.on(" ").join(
                         Iterables.limit(Arrays.asList(evaluation.hits[index]), 10)));
+                writer.append(';');
+                writer.append(Joiner.on(" ").join(queryLayers));
                 writer.append('\n');
             }
         }
@@ -272,7 +365,7 @@ final class Evaluation {
 
         // Write file
         try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(resultPath
-                .resolve(evaluation.queryID + "-rank.csv").toAbsolutePath().toString())))) {
+                .resolve("ranking-" + evaluation.queryID + ".csv").toAbsolutePath().toString())))) {
 
             // Write header
             for (final String layer : layers) {
@@ -311,22 +404,6 @@ final class Evaluation {
         }
     }
 
-    private void writeSettingScores(final Path resultPath,
-            final Iterable<QueryEvaluation> evaluations, final int settingIndex)
-            throws IOException {
-
-        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(resultPath
-                .resolve("setting-" + Joiner.on('-').join(this.settings[settingIndex]) + ".csv")
-                .toAbsolutePath().toString())))) {
-            writer.append("query;p@1;p@3;p@5;p@10;mrr;ndcg;ndcg@10;map;map@10\n");
-            for (final QueryEvaluation evaluation : evaluations) {
-                writer.append(evaluation.queryID).append(';')
-                        .append(formatRankingScore(evaluation.scores[settingIndex], ";"))
-                        .append('\n');
-            }
-        }
-    }
-
     private void logCompletion(final RankingScore[] scores, final Map<Measure, float[]> pvalues) {
 
         final RankingScore[] sortedScores = scores.clone();
@@ -353,7 +430,7 @@ final class Evaluation {
     }
 
     private static <T> int[] sort(final T[] array, final Comparator<? super T> comparator) {
-        final Map<T, Integer> map = Maps.newHashMap();
+        final Map<T, Integer> map = Maps.newIdentityHashMap();
         for (int i = 0; i < array.length; ++i) {
             map.put(array[i], i);
         }
@@ -365,36 +442,22 @@ final class Evaluation {
         return indexes;
     }
 
-    private static TermVector toTermVector(final Document document) {
-        final TermVector.Builder builder = TermVector.builder();
-        for (final IndexableField field : document.getFields()) {
-            final String name = field.name();
-            if (!"id".equals(name)) {
-                final String value = field.stringValue();
-                try {
-                    builder.addTerm(name, value);
-                } catch (final Throwable ex) {
-                    // Ignore
-                }
-            }
-        }
-        final TermVector vector = builder.build();
-        return vector;
-    }
-
-    private static String formatRankingScore(final RankingScore score, final String separator) {
-        final StringBuilder builder = new StringBuilder();
-        builder.append(score.getPrecision(1)).append(separator);
-        builder.append(score.getPrecision(3)).append(separator);
-        builder.append(score.getPrecision(5)).append(separator);
-        builder.append(score.getPrecision(10)).append(separator);
-        builder.append(score.getMRR()).append(separator);
-        builder.append(score.getNDCG()).append(separator);
-        builder.append(score.getNDCG(10)).append(separator);
-        builder.append(score.getMAP()).append(separator);
-        builder.append(score.getMAP(10));
-        return builder.toString();
-    }
+    //    private TermVector toTermVector(final Document document) {
+    //        final TermVector.Builder builder = TermVector.builder();
+    //        for (final IndexableField field : document.getFields()) {
+    //            final String name = field.name();
+    //            if (!"id".equals(name)) {
+    //                final String value = field.stringValue();
+    //                try {
+    //                    builder.addTerm(name, value);
+    //                } catch (final Throwable ex) {
+    //                    // Ignore
+    //                }
+    //            }
+    //        }
+    //        final TermVector vector = builder.build();
+    //        return vector;
+    //    }
 
     private final class QueryEvaluation implements Runnable {
 
@@ -488,10 +551,16 @@ final class Evaluation {
                     synchronized (this.cachedDocumentIDs) {
                         docID = this.cachedDocumentIDs.get(scoreDoc.doc);
                         if (docID == null) {
-                            final Document doc = Evaluation.this.searcher.doc(scoreDoc.doc);
+                            final Document doc = Evaluation.this.searcher.doc(scoreDoc.doc,
+                                    ImmutableSet.of("id"));
                             docID = doc.get("id");
+                            final TermVector docVector = Evaluation.this.documentVectors
+                                    .get(docID);
+                            // final Document doc = Evaluation.this.searcher.doc(scoreDoc.doc);
+                            // docID = doc.get("id");
+                            // final TermVector docVector = toTermVector(doc);
                             this.cachedDocumentIDs.put(scoreDoc.doc, docID);
-                            this.cachedDocumentVectors.put(docID, toTermVector(doc));
+                            this.cachedDocumentVectors.put(docID, docVector);
                         }
                     }
                     matches.put(layer, docID);
@@ -531,11 +600,14 @@ final class Evaluation {
                             this.queryVector.project(Arrays.asList(setting)), vectors,
                             this.statistics);
 
-                    // Build and store a sorted list of Hit objects
-                    final Hit[] hits = new Hit[ids.length];
+                    // Build and store a sorted list of Hit objects, removing documents scored 0
+                    final List<Hit> hitList = Lists.newArrayList();
                     for (int j = 0; j < ids.length; ++j) {
-                        hits[j] = new Hit(ids[j], scores[j]);
+                        if (scores[j] > 0.0f) {
+                            hitList.add(new Hit(ids[j], scores[j]));
+                        }
                     }
+                    final Hit[] hits = hitList.toArray(new Hit[hitList.size()]);
                     Arrays.sort(hits);
                     this.hits[i] = hits;
 
@@ -614,7 +686,7 @@ final class Evaluation {
         public String toString() {
             final StringBuilder builder = new StringBuilder();
             builder.append(this.documentID);
-            builder.append(':');
+            builder.append('/');
             builder.append(String.format("%.3f", this.score));
             return builder.toString();
         }

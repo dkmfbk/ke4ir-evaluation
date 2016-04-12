@@ -14,6 +14,7 @@ import javax.annotation.Nullable;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
 
 public final class TermVector implements Comparable<TermVector> {
 
@@ -25,6 +26,8 @@ public final class TermVector implements Comparable<TermVector> {
 
     private transient int hash;
 
+    private transient Set<String> layers;
+
     private TermVector(final List<Term> terms) {
         this.terms = ImmutableList.copyOf(terms);
     }
@@ -35,6 +38,17 @@ public final class TermVector implements Comparable<TermVector> {
 
     public int size() {
         return this.terms.size();
+    }
+
+    public Set<String> getLayers() {
+        if (this.layers == null) {
+            final Set<String> layers = Sets.newHashSet();
+            for (final Term term : this.terms) {
+                layers.add(term.getField());
+            }
+            this.layers = ImmutableSet.copyOf(layers);
+        }
+        return this.layers;
     }
 
     public List<Term> getTerms() {

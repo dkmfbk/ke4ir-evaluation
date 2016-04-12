@@ -24,7 +24,9 @@ public class RankingScore implements Serializable {
 
     private final int maxN;
 
-    private final int numRankings;
+    private final int numRanking;
+
+    private final int[] numRankings;
 
     private final double[] precisions;
 
@@ -42,10 +44,11 @@ public class RankingScore implements Serializable {
 
     private final double[] maps;
 
-    private RankingScore(final int maxN, final int numRankings, final double[] precisions,
-            final double mrr, final double ndcg, final double[] ndcgs, final double altNdcg,
-            final double[] altNdcgs, final double map, final double[] maps) {
+    private RankingScore(final int maxN, final int numRanking, final int[] numRankings,
+            final double[] precisions, final double mrr, final double ndcg, final double[] ndcgs,
+            final double altNdcg, final double[] altNdcgs, final double map, final double[] maps) {
         this.maxN = maxN;
+        this.numRanking = numRanking;
         this.numRankings = numRankings;
         this.precisions = precisions;
         this.mrr = mrr;
@@ -96,7 +99,12 @@ public class RankingScore implements Serializable {
     }
 
     public int getNumRankings() {
-        return this.numRankings;
+        return this.numRanking;
+    }
+
+    public int getNumRankings(final int atNumber) {
+        checkNumber(atNumber);
+        return this.numRankings[atNumber - 1];
     }
 
     public double getPrecision(final int atNumber) {
@@ -161,7 +169,8 @@ public class RankingScore implements Serializable {
             return false;
         }
         final RankingScore other = (RankingScore) object;
-        return this.maxN == other.maxN && this.numRankings == other.numRankings
+        return this.maxN == other.maxN && this.numRanking == other.numRanking
+                && Arrays.equals(this.numRankings, other.numRankings)
                 && Arrays.equals(this.precisions, other.precisions) && this.mrr == other.mrr
                 && this.ndcg == other.ndcg && Arrays.equals(this.ndcgs, other.ndcgs)
                 && this.map == other.map && Arrays.equals(this.maps, other.maps);
@@ -169,9 +178,9 @@ public class RankingScore implements Serializable {
 
     @Override
     public int hashCode() {
-        return Objects.hash(this.maxN, this.numRankings, Arrays.hashCode(this.precisions),
-                this.mrr, this.ndcg, Arrays.hashCode(this.ndcgs), this.map,
-                Arrays.hashCode(this.maps));
+        return Objects.hash(this.maxN, this.numRanking, Arrays.hashCode(this.numRankings),
+                Arrays.hashCode(this.precisions), this.mrr, this.ndcg,
+                Arrays.hashCode(this.ndcgs), this.map, Arrays.hashCode(this.maps));
     }
 
     @Override
@@ -384,9 +393,11 @@ public class RankingScore implements Serializable {
 
         private int maxN;
 
-        private int numRankings;
+        private int numRanking;
 
-        private double[] sumPrecisions;
+        private int[] numRankings;
+
+        private double[] sumPrecision;
 
         private double sumMRR;
 
@@ -406,8 +417,9 @@ public class RankingScore implements Serializable {
 
         private Evaluator(final int maxN) {
             this.maxN = maxN;
-            this.numRankings = 0;
-            this.sumPrecisions = new double[maxN];
+            this.numRanking = 0;
+            this.numRankings = new int[maxN];
+            this.sumPrecision = new double[maxN];
             this.sumMRR = 0.0;
             this.sumNDCG = 0.0;
             this.sumNDCGs = new double[maxN];
@@ -421,7 +433,8 @@ public class RankingScore implements Serializable {
         private void shrinkIfNeeded(final int maxN) {
             if (maxN < this.maxN) {
                 this.maxN = maxN;
-                this.sumPrecisions = Arrays.copyOf(this.sumPrecisions, maxN);
+                this.numRankings = Arrays.copyOf(this.numRankings, maxN);
+                this.sumPrecision = Arrays.copyOf(this.sumPrecision, maxN);
                 this.sumNDCGs = Arrays.copyOf(this.sumNDCGs, maxN);
                 this.sumAltNDCGs = Arrays.copyOf(this.sumAltNDCGs, maxN);
                 this.sumMAPs = Arrays.copyOf(this.sumMAPs, maxN);
@@ -463,7 +476,7 @@ public class RankingScore implements Serializable {
 
             synchronized (this) {
 
-                ++this.numRankings;
+                ++this.numRanking;
                 this.result = null; // invalidate cached result
 
                 for (final T item : ranking) {
@@ -491,7 +504,8 @@ public class RankingScore implements Serializable {
                     }
 
                     if (n <= this.maxN) {
-                        this.sumPrecisions[n - 1] += pn;
+                        ++this.numRankings[n - 1];
+                        this.sumPrecision[n - 1] += pn;
                         this.sumNDCGs[n - 1] += ndcgNum / ndcgDen;
                         this.sumAltNDCGs[n - 1] += altNdcgNum / altNdcgDen;
                         if (!relItems.isEmpty()) {
@@ -512,7 +526,6 @@ public class RankingScore implements Serializable {
                                 relsSorted[relsSorted.length - n]) - 1) * altF;
                     }
                     if (n <= this.maxN) {
-                        this.sumPrecisions[n - 1] += (double) c / n;
                         this.sumNDCGs[n - 1] += ndcgNum / ndcgDen;
                         this.sumAltNDCGs[n - 1] += altNdcgNum / altNdcgDen;
                         if (!relItems.isEmpty()) {
@@ -543,16 +556,18 @@ public class RankingScore implements Serializable {
         public Evaluator add(final RankingScore score) {
             synchronized (this) {
                 shrinkIfNeeded(score.maxN);
-                this.numRankings += score.numRankings;
-                this.sumMRR += score.mrr * score.numRankings;
-                this.sumNDCG += score.ndcg * score.numRankings;
-                this.sumAltNDCG += score.altNdcg * score.numRankings;
-                this.sumMAP += score.map * score.numRankings;
+                this.numRanking += score.numRanking;
+                this.sumMRR += score.mrr * score.numRanking;
+                this.sumNDCG += score.ndcg * score.numRanking;
+                this.sumAltNDCG += score.altNdcg * score.numRanking;
+                this.sumMAP += score.map * score.numRanking;
                 for (int i = 0; i < this.maxN; ++i) {
-                    this.sumPrecisions[i] += score.precisions[i] * score.numRankings;
-                    this.sumNDCGs[i] += score.ndcgs[i] * score.numRankings;
-                    this.sumAltNDCGs[i] += score.altNdcgs[i] * score.numRankings;
-                    this.sumMAPs[i] += score.maps[i] * score.numRankings;
+                    this.numRankings[i] += score.numRankings[i];
+                    this.sumPrecision[i] += score.numRankings[i] == 0 ? 0 : score.precisions[i]
+                            * score.numRankings[i];
+                    this.sumNDCGs[i] += score.ndcgs[i] * score.numRanking;
+                    this.sumAltNDCGs[i] += score.altNdcgs[i] * score.numRanking;
+                    this.sumMAPs[i] += score.maps[i] * score.numRanking;
                 }
                 this.result = null;
             }
@@ -563,13 +578,14 @@ public class RankingScore implements Serializable {
             synchronized (evaluator) {
                 synchronized (this) {
                     shrinkIfNeeded(evaluator.maxN);
-                    this.numRankings += evaluator.numRankings;
+                    this.numRanking += evaluator.numRanking;
                     this.sumMRR += evaluator.sumMRR;
                     this.sumNDCG += evaluator.sumNDCG;
                     this.sumAltNDCG += evaluator.sumAltNDCG;
                     this.sumMAP += evaluator.sumMAP;
                     for (int i = 0; i < this.maxN; ++i) {
-                        this.sumPrecisions[i] += evaluator.sumPrecisions[i];
+                        this.numRankings[i] += evaluator.numRankings[i];
+                        this.sumPrecision[i] += evaluator.sumPrecision[i];
                         this.sumNDCGs[i] += evaluator.sumNDCGs[i];
                         this.sumAltNDCGs[i] += evaluator.sumAltNDCGs[i];
                         this.sumMAPs[i] += evaluator.sumMAPs[i];
@@ -583,7 +599,7 @@ public class RankingScore implements Serializable {
         public RankingScore get() {
             synchronized (this) {
                 if (this.result == null) {
-                    final double factor = this.numRankings == 0 ? 0.0 : 1.0 / this.numRankings;
+                    final double factor = this.numRanking == 0 ? 0.0 : 1.0 / this.numRanking;
                     final double mrr = this.sumMRR * factor;
                     final double ndcg = this.sumNDCG * factor;
                     final double altNdcg = this.sumAltNDCG * factor;
@@ -593,13 +609,15 @@ public class RankingScore implements Serializable {
                     final double[] altNdcgs = new double[this.maxN];
                     final double[] maps = new double[this.maxN];
                     for (int i = 0; i < this.maxN; ++i) {
-                        precisions[i] = this.sumPrecisions[i] * factor;
+                        precisions[i] = this.numRankings[i] == 0 ? Double.NaN
+                                : this.sumPrecision[i] / this.numRankings[i];
                         ndcgs[i] = this.sumNDCGs[i] * factor;
                         altNdcgs[i] = this.sumAltNDCGs[i] * factor;
                         maps[i] = this.sumMAPs[i] * factor;
                     }
-                    this.result = new RankingScore(this.maxN, this.numRankings, precisions, mrr,
-                            ndcg, ndcgs, altNdcg, altNdcgs, map, maps);
+                    this.result = new RankingScore(this.maxN, this.numRanking,
+                            this.numRankings.clone(), precisions, mrr, ndcg, ndcgs, altNdcg,
+                            altNdcgs, map, maps);
                 }
                 return this.result;
             }

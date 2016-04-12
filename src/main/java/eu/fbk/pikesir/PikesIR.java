@@ -96,9 +96,11 @@ public class PikesIR {
 
     private final List<String> layers;
 
-    private final Set<String> baselineLayers;
+    private final Set<String> evalBaseline;
 
-    private final RankingScore.Measure sortMeasure;
+    private final RankingScore.Measure evalSortMeasure;
+
+    private final String evalStatisticalTest;
 
     private final Enricher enricher;
 
@@ -168,6 +170,14 @@ public class PikesIR {
             index |= Boolean.parseBoolean(properties.getProperty(pr + "index", "false"));
             search |= Boolean.parseBoolean(properties.getProperty(pr + "search", "false"));
 
+            //            final List<String> data = Lists.newArrayList();
+            //            for (int j = 0; j <= 100; j += 1) {
+            //                final double w = j * 0.01;
+            //                final String ws = "textual:" + (1 - w) + " uri:" + w / 4 + " type:" + w / 4
+            //                        + " frame:" + w / 4 + " time:" + w / 4;
+            //                System.out.println("\n\n\n**** " + ws + " ****\n\n");
+            //                properties.setProperty("pikesir.ranker.tfidf.weights", ws);
+
             // Initialize the PikesIR main object
             final PikesIR pikesIR = new PikesIR(propertiesPath.getParent(), properties, "pikesir.");
             LOGGER.info("Initialized in {} ms", System.currentTimeMillis() - ts);
@@ -192,17 +202,10 @@ public class PikesIR {
                 pikesIR.search();
             }
 
-            //            final List<String> data = Lists.newArrayList();
-            //            for (int j = 0; j <= 100; ++j) {
-            //                final double textWeight = j * 0.01;
-            //                System.out.println("\n\n\n**** " + textWeight + " ****\n\n");
-            //                properties.setProperty("pikesir.aggregator.balanced.textweight", "" + textWeight);
-            //                mainHelper(propertiesPath.getParent(), properties, enrichQueries, enrichDocs,
-            //                        analyzeQueries, analyzeDocs, index, search);
             //                final List<String> lines = Files.readAllLines(propertiesPath.getParent().resolve(
             //                        "results/aggregates.csv"));
             //                for (int i = 1; i < lines.size(); ++i) {
-            //                    data.add(String.format("%.2f", textWeight) + ";" + lines.get(i));
+            //                    data.add(String.format("%.2f", w) + ";" + lines.get(i));
             //                }
             //            }
             //            Files.write(propertiesPath.getParent().resolve("results/experiment.csv"), data,
@@ -248,13 +251,13 @@ public class PikesIR {
         this.layers = Splitter.on(Pattern.compile("[\\s,;]+")).trimResults().omitEmptyStrings()
                 .splitToList(properties.getProperty(pr + "layers"));
 
-        // Retrieve sort preferences
-        this.sortMeasure = RankingScore.Measure.create(properties.getProperty(pr + "results.sort",
-                "map").trim());
-
-        // Retrieve baseline layers
-        this.baselineLayers = ImmutableSet.copyOf(properties.getProperty(pr + "results.baseline",
+        // Retrieve evaluation settings
+        this.evalSortMeasure = RankingScore.Measure.create(properties.getProperty(
+                pr + "results.sort", "map").trim());
+        this.evalBaseline = ImmutableSet.copyOf(properties.getProperty(pr + "results.baseline",
                 "textual").split("\\s+"));
+        this.evalStatisticalTest = properties.getProperty(pr + "results.test", "ttest").trim()
+                .toLowerCase();
 
         // Build the enricher
         this.enricher = Enricher.create(root, properties, "pikesir.enricher.");
@@ -424,14 +427,22 @@ public class PikesIR {
         // Read queries
         final Map<String, TermVector> queries = readQueries(this.pathQueriesTerms);
 
+        // Read document vectors // TODO: this data should be loaded from the index on demand!
+        Map<String, TermVector> documents;
+        try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(this.pathDocsTerms.toAbsolutePath()
+                .toString())))) {
+            documents = TermVector.read(reader);
+        }
+
         // Create results directory if necessary and wipe out existing content
         initDir(this.pathResults);
 
         try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex))) {
             final IndexSearcher searcher = new IndexSearcher(reader);
             searcher.setSimilarity(FakeSimilarity.INSTANCE);
-            new Evaluation(searcher, this.ranker, this.layers, this.baselineLayers,
-                    this.sortMeasure).run(queries, rels, this.pathResults);
+            new Evaluation(searcher, this.ranker, this.layers, this.evalBaseline,
+                    this.evalSortMeasure, this.evalStatisticalTest, documents).run(queries, rels,
+                    this.pathResults);
         }
 
         LOGGER.info("Done in {} ms", System.currentTimeMillis() - ts);
