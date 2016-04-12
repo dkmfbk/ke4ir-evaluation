@@ -1,4 +1,4 @@
-package eu.fbk.pikesir;
+package eu.fbk.ke4ir;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -24,7 +24,7 @@ import org.openrdf.rio.RDFHandlerException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import eu.fbk.pikesir.util.KeyQuadIndex;
+import eu.fbk.ke4ir.util.KeyQuadIndex;
 import eu.fbk.rdfpro.RDFHandlers;
 import eu.fbk.rdfpro.RDFProcessors;
 import eu.fbk.rdfpro.RDFSources;

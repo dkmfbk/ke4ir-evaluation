@@ -1,4 +1,4 @@
-package eu.fbk.pikesir;
+package eu.fbk.ke4ir;
 
 import java.nio.file.Path;
 import java.util.Map;

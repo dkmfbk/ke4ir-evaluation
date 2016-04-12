@@ -21,7 +21,7 @@
         level="INFO" />
 
     <logger
-        name="eu.fbk.pikesir"
+        name="eu.fbk.ke4ir"
         level="INFO" />
 
     <logger

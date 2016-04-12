@@ -1,4 +1,4 @@
-package eu.fbk.pikesir.util;
+package eu.fbk.ke4ir.util;
 
 import java.util.Random;
 

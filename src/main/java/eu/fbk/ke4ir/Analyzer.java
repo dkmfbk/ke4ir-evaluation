@@ -1,4 +1,4 @@
-package eu.fbk.pikesir;
+package eu.fbk.ke4ir;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -33,7 +33,7 @@ import org.tartarus.snowball.SnowballProgram;
 
 import ixa.kaflib.KAFDocument;
 
-import eu.fbk.pikesir.TermVector.Builder;
+import eu.fbk.ke4ir.TermVector.Builder;
 import eu.fbk.rdfpro.util.Hash;
 import eu.fbk.rdfpro.util.Namespaces;
 import eu.fbk.rdfpro.util.QuadModel;

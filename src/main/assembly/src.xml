@@ -4,7 +4,7 @@
         <format>tar.gz</format>
     </formats>
     <includeBaseDirectory>true</includeBaseDirectory>
-    <baseDirectory>pikesir</baseDirectory>
+    <baseDirectory>ke4ir</baseDirectory>
     <fileSets>
         <fileSet>
             <directory>.</directory>

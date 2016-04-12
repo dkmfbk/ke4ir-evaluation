@@ -1,4 +1,4 @@
-package eu.fbk.pikesir;
+package eu.fbk.ke4ir;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -53,8 +53,8 @@ import org.slf4j.LoggerFactory;
 
 import ixa.kaflib.KAFDocument;
 
-import eu.fbk.pikesir.util.CommandLine;
-import eu.fbk.pikesir.util.RankingScore;
+import eu.fbk.ke4ir.util.CommandLine;
+import eu.fbk.ke4ir.util.RankingScore;
 import eu.fbk.rdfpro.AbstractRDFHandlerWrapper;
 import eu.fbk.rdfpro.RDFHandlers;
 import eu.fbk.rdfpro.RDFSources;
@@ -63,9 +63,9 @@ import eu.fbk.rdfpro.util.IO;
 import eu.fbk.rdfpro.util.QuadModel;
 import eu.fbk.rdfpro.util.Statements;
 
-public class PikesIR {
+public class KE4IR {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(PikesIR.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(KE4IR.class);
 
     private static final Pattern NAF_PATTERN = Pattern.compile("\\.naf(\\.(gz|bz2|xz|7z))?$");
 
@@ -114,7 +114,7 @@ public class PikesIR {
             // Parse command line
             final CommandLine cmd = CommandLine
                     .parser()
-                    .withName("pikesir")
+                    .withName("ke4ir")
                     .withOption("c", "configuration", "specifies the PATH to the JavaScript " //
                             + "configuration file (default: configuration.js)", "PATH",
                             CommandLine.Type.FILE_EXISTING, true, false, false)
@@ -137,7 +137,7 @@ public class PikesIR {
 
             // Extract options
             final Path propertiesPath = Paths.get(cmd.getOptionValue("p", String.class,
-                    System.getProperty("user.dir") + "/pikesir.properties"));
+                    System.getProperty("user.dir") + "/ke4ir.properties"));
             boolean enrichDocs = cmd.hasOption("enrich-docs") || cmd.hasOption("e");
             boolean enrichQueries = cmd.hasOption("enrich-queries") || cmd.hasOption("e");
             boolean analyzeDocs = cmd.hasOption("analyze-docs") || cmd.hasOption("a");
@@ -159,7 +159,7 @@ public class PikesIR {
             }
 
             // Force certain actions if specified in properties file
-            final String pr = "pikesir.forcecmd.";
+            final String pr = "ke4ir.forcecmd.";
             enrichDocs |= Boolean.parseBoolean(properties.getProperty(pr + "enrichdocs", "false"));
             enrichQueries |= Boolean.parseBoolean(properties.getProperty( //
                     pr + "enrichqueries", "false"));
@@ -176,30 +176,30 @@ public class PikesIR {
             //                final String ws = "textual:" + (1 - w) + " uri:" + w / 4 + " type:" + w / 4
             //                        + " frame:" + w / 4 + " time:" + w / 4;
             //                System.out.println("\n\n\n**** " + ws + " ****\n\n");
-            //                properties.setProperty("pikesir.ranker.tfidf.weights", ws);
+            //                properties.setProperty("ke4ir.ranker.tfidf.weights", ws);
 
-            // Initialize the PikesIR main object
-            final PikesIR pikesIR = new PikesIR(propertiesPath.getParent(), properties, "pikesir.");
+            // Initialize the KE4IR main object
+            final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.");
             LOGGER.info("Initialized in {} ms", System.currentTimeMillis() - ts);
 
             // Perform the requested operations
             if (enrichQueries) {
-                pikesIR.enrichQueries();
+                ke4ir.enrichQueries();
             }
             if (enrichDocs) {
-                pikesIR.enrichDocs();
+                ke4ir.enrichDocs();
             }
             if (analyzeQueries) {
-                pikesIR.analyzeQueries();
+                ke4ir.analyzeQueries();
             }
             if (analyzeDocs) {
-                pikesIR.analyzeDocs();
+                ke4ir.analyzeDocs();
             }
             if (index) {
-                pikesIR.index();
+                ke4ir.index();
             }
             if (search) {
-                pikesIR.search();
+                ke4ir.search();
             }
 
             //                final List<String> lines = Files.readAllLines(propertiesPath.getParent().resolve(
@@ -217,7 +217,7 @@ public class PikesIR {
         }
     }
 
-    public PikesIR(final Path root, final Properties properties, final String prefix) {
+    public KE4IR(final Path root, final Properties properties, final String prefix) {
 
         // Normalize prefix, ensuring it ends with '.'
         final String pr = prefix.endsWith(".") ? prefix : prefix + ".";
@@ -260,13 +260,13 @@ public class PikesIR {
                 .toLowerCase();
 
         // Build the enricher
-        this.enricher = Enricher.create(root, properties, "pikesir.enricher.");
+        this.enricher = Enricher.create(root, properties, "ke4ir.enricher.");
 
         // Build the analyzer
-        this.analyzer = Analyzer.create(root, properties, "pikesir.analyzer.");
+        this.analyzer = Analyzer.create(root, properties, "ke4ir.analyzer.");
 
         // Build the ranker
-        this.ranker = Ranker.create(root, properties, "pikesir.ranker.");
+        this.ranker = Ranker.create(root, properties, "ke4ir.ranker.");
 
         // Report configuration
         LOGGER.info("Using enricher: {}", this.enricher);

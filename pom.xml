@@ -12,12 +12,12 @@
     </parent>
 
     <groupId>eu.fbk</groupId>
-    <artifactId>pikesir</artifactId>
+    <artifactId>ke4ir</artifactId>
     <version>0.1-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>pikesir</name>
-    <url>http://maven.apache.org</url>
+    <name>ke4ir</name>
+    <url>http://pikes.fbk.eu/ke4ir</url>
 
     <repositories>
         <repository>

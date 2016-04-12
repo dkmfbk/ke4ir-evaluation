@@ -33,4 +33,4 @@ for _JAR in `ls $_LIB/*.jar` ; do
 done
 
 # Execute the program
-$_JAVA $JAVA_OPTS -classpath $_CLASSPATH eu.fbk.pikesir.PikesIR "$@"
+$_JAVA $JAVA_OPTS -classpath $_CLASSPATH eu.fbk.ke4ir.KE4IR "$@"

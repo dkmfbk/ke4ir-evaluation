@@ -1,4 +1,4 @@
-package eu.fbk.pikesir;
+package eu.fbk.ke4ir;
 
 import java.io.IOException;
 import java.io.Writer;
@@ -38,13 +38,13 @@ import org.apache.lucene.search.TopDocs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import eu.fbk.pikesir.util.ApproximateRandomization;
-import eu.fbk.pikesir.util.RankingScore;
-import eu.fbk.pikesir.util.RankingScore.Measure;
+import eu.fbk.ke4ir.util.ApproximateRandomization;
+import eu.fbk.ke4ir.util.RankingScore;
+import eu.fbk.ke4ir.util.RankingScore.Measure;
 import eu.fbk.rdfpro.util.Environment;
 import eu.fbk.rdfpro.util.IO;
 
-// Utility class used by PikesIR
+// Utility class used by KE4IR
 
 final class Evaluation {
 

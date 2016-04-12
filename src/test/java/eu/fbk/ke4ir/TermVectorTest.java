@@ -1,8 +1,10 @@
-package eu.fbk.pikesir;
+package eu.fbk.ke4ir;
 
 import com.google.common.collect.ImmutableList;
 
 import org.junit.Test;
+
+import eu.fbk.ke4ir.TermVector;
 
 public class TermVectorTest {
 

@@ -1,11 +1,11 @@
-package eu.fbk.pikesir;
+package eu.fbk.ke4ir;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 
 import org.junit.Test;
 
-import eu.fbk.pikesir.util.RankingScore;
+import eu.fbk.ke4ir.util.RankingScore;
 
 public class RankingScoreTest {
 
