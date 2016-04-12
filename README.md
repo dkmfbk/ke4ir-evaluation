@@ -8,13 +8,14 @@ This GitHub project contains the Java code (based on [Lucene](http://lucene.apac
 ## Installation
 
 This code is released open source using Maven. To install it, just type into the shell:
-* `git clone https://github.com/dkmfbk/ke4ir-evaluation.git`
-* `cd ke4ir-evaluation`
-* `git checkout -b develop origin/develop` (to use the latest code from the `develop` branch)
-* `mvn clean package -DskipTests -Prelease`
-* `cd target`
-* `tar xf ke4ir-0.1-SNAPSHOT-bin.tar.gz`
-* `cd ke4ir`
+
+  * `git clone https://github.com/dkmfbk/ke4ir-evaluation.git`
+  * `cd ke4ir-evaluation`
+  * `git checkout -b develop origin/develop` (to use the latest code from the `develop` branch)
+  * `mvn clean package -DskipTests -Prelease`
+  * `cd target`
+  * `tar xf ke4ir-0.1-SNAPSHOT-bin.tar.gz`
+  * `cd ke4ir`
 
 Now you can start the tool by simply using the `./ke4ir-eval` script. If your want, you can move the `ke4ir` folder containing the compiled binaries in any path of your choice.
 
@@ -60,4 +61,4 @@ Options `-a`, `-e`, `-i`, and `-s` trigger the following actions (they can be co
   * *indexing* (`-i`), consisting in the construction of a Lucene index with (textual, semantic) terms of documents, obtained in the analysis step;
   * *search* (`-s`), consisting in the evaluation of queries over the previously built index, and the comparison of the obtained rankings with gold relevance judgments, which results in the computation of a number of evaluation metrics.
 
-When using `ke4ir-eval` on the data distributed on KE4IR webpage, enrichment was already performed and only analysis, indexing, and search has to be performed to replicate our evaluation results (the distributed `ke4ir.properties` configuration file is already setup to perform the execution of these actions). 
+When using `ke4ir-eval` on the data distributed on KE4IR webpage, enrichment was already performed and only analysis, indexing, and search has to be performed to replicate our evaluation results (the distributed `ke4ir.properties` configuration file is already setup to perform the execution of these actions).
