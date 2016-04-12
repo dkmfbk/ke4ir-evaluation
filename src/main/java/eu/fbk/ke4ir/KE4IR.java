@@ -114,10 +114,7 @@ public class KE4IR {
             // Parse command line
             final CommandLine cmd = CommandLine
                     .parser()
-                    .withName("ke4ir")
-                    .withOption("c", "configuration", "specifies the PATH to the JavaScript " //
-                            + "configuration file (default: configuration.js)", "PATH",
-                            CommandLine.Type.FILE_EXISTING, true, false, false)
+                    .withName("ke4ir-eval")
                     .withOption("p", "properties", "specifies the configuration properties file",
                             "PATH", CommandLine.Type.FILE_EXISTING, true, false, false)
                     .withOption("e", "enrich", "enriches the RDF of both documents and queries")
