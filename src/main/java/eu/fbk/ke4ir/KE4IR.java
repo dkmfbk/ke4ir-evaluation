@@ -47,6 +47,8 @@ import org.apache.lucene.search.similarities.Similarity;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
 import org.openrdf.model.Statement;
+import org.openrdf.model.URI;
+import org.openrdf.model.impl.URIImpl;
 import org.openrdf.rio.RDFHandlerException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -350,7 +352,11 @@ public class KE4IR {
                     final KAFDocument document;
                     document = KAFDocument.createFromStream( //
                             IO.utf8Reader(new ByteArrayInputStream(bytes)));
-                    final String id = document.getPublic().publicId;
+                    String id = document.getPublic().publicId;
+                    if (id == null) {
+                        URI uri = new URIImpl(document.getPublic().uri);
+                        id = uri.getLocalName();
+                    }
                     final TermVector.Builder builder = TermVector.builder();
                     this.analyzer.analyze(document, model, builder);
                     final TermVector vector = builder.build();
