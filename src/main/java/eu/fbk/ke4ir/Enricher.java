@@ -26,6 +26,7 @@ import org.slf4j.LoggerFactory;
 
 import eu.fbk.ke4ir.util.KeyQuadIndex;
 import eu.fbk.rdfpro.RDFHandlers;
+import eu.fbk.rdfpro.RDFProcessor;
 import eu.fbk.rdfpro.RDFProcessors;
 import eu.fbk.rdfpro.RDFSources;
 import eu.fbk.rdfpro.util.QuadModel;
@@ -36,7 +37,7 @@ import eu.fbk.rdfpro.util.QuadModel;
  *
  * <p>
  * Enrichment is performed by calling method {@link #enrich(QuadModel)} and consists in adding
- * additional triples to the graph. Two basic kinds of enrichment are provided by this class
+ * additional triples to the graph. Three basic kinds of enrichment are provided by this class
  * (additional enrichers can be implemented by subclassing):
  * <ul>
  * <li>URI enrichment (configured via {@link #createURIEnricher(Path, Iterable, Iterable)} matches
@@ -44,6 +45,9 @@ import eu.fbk.rdfpro.util.QuadModel;
  * repeating the process recursively for newly introduced URIs;</li>
  * <li>RDFS enrichment (configured via {@link #createRDFSEnricher()} materializes the RDFS closure
  * of the knowledge graph.</li>
+ * <li>RDFProcessor enrichment (configured via {@link #createRDFProcessorEnricher(RDFProcessor)}
+ * applies a configurable {@link RDFProcessor} to the knowledge graph, replacing it with the
+ * output of the processor.</li>
  * </ul>
  * These enrichers can be concatenated in a composite enricher applying them in sequence via
  * method {@link #concat(Enricher...)}. Method {@link #create(Path, Properties, String)} allows to
@@ -137,6 +141,20 @@ public abstract class Enricher {
     }
 
     /**
+     * Returns an enricher that processes the triples in the input {@code QuadModel} with the
+     * supplied {@code RDFProcessor}, replacing the {@code QuadModel} with the result of the
+     * processing. This enricher can be used to apply generic transformations to RDF data, using
+     * RDFpro processors (e.g., to drop irrelevant triples to save disk space).
+     *
+     * @param processor
+     *            the processor to apply, not null
+     * @return the created enricher
+     */
+    public static Enricher createRDFProcessorEnricher(final RDFProcessor processor) {
+        return new RDFProcessorEnricher(processor);
+    }
+
+    /**
      * Returns an enricher based on the configuration properties supplied. The method looks for
      * certain properties within the {@link Properties} object supplied, prepending them an
      * optional prefix (e.g., if property is X and the prefix is Y, the method will look for
@@ -173,25 +191,32 @@ public abstract class Enricher {
         final List<Enricher> enrichers = new ArrayList<>();
 
         // Retrieve the types of analyzer enabled in the configuration
-        final Set<String> types = ImmutableSet.copyOf(properties.getProperty(prefix + "type", "")
-                .split("\\s+"));
+        final Set<String> types = ImmutableSet
+                .copyOf(properties.getProperty(prefix + "type", "").split("\\s+"));
 
         // Add an enricher adding triples about certain URIs, possibly recursively
         if (types.contains("uri")) {
             final String uriIndexPath = properties.getProperty(prefix + "uri.index");
-            final Set<String> recursionNS = ImmutableSet.copyOf(properties.getProperty(
-                    prefix + "uri.recursion", "").split("\\s+"));
-            final Set<String> noRecursionNS = ImmutableSet.copyOf(properties.getProperty(
-                    prefix + "uri.norecursion", "").split("\\s+"));
+            final Set<String> recursionNS = ImmutableSet
+                    .copyOf(properties.getProperty(prefix + "uri.recursion", "").split("\\s+"));
+            final Set<String> noRecursionNS = ImmutableSet
+                    .copyOf(properties.getProperty(prefix + "uri.norecursion", "").split("\\s+"));
             if (!recursionNS.isEmpty() && !noRecursionNS.isEmpty()) {
-                enrichers.add(createURIEnricher(root.resolve(uriIndexPath), noRecursionNS,
-                        recursionNS));
+                enrichers.add(
+                        createURIEnricher(root.resolve(uriIndexPath), noRecursionNS, recursionNS));
             }
         }
 
         // Add an enricher computing the RDFS closure of the model, if enabled
         if (types.contains("rdfs")) {
             enrichers.add(createRDFSEnricher());
+        }
+
+        // Add an enricher applying a configurable RDFProcessor to the input triples
+        if (types.contains("rdfpro")) {
+            final String command = properties.getProperty(prefix + "rdfpro.command");
+            final RDFProcessor processor = RDFProcessors.parse(true, command);
+            enrichers.add(createRDFProcessorEnricher(processor));
         }
 
         // Combine the enrichers
@@ -239,9 +264,10 @@ public abstract class Enricher {
         public void enrich(final QuadModel model) {
             try {
                 final int numTriplesBefore = model.size();
-                RDFProcessors.rdfs(RDFSources.wrap(ImmutableList.copyOf(model)), SESAME.NIL, true,
-                        true, "rdfs4a", "rdfs4b", "rdfs8").apply(RDFSources.NIL,
-                        RDFHandlers.wrap(model), 1);
+                RDFProcessors
+                        .rdfs(RDFSources.wrap(ImmutableList.copyOf(model)), SESAME.NIL, true, true,
+                                "rdfs4a", "rdfs4b", "rdfs8")
+                        .apply(RDFSources.NIL, RDFHandlers.wrap(model), 1);
                 LOGGER.debug("Inferred {} triples (total {})", model.size() - numTriplesBefore,
                         model.size());
             } catch (final RDFHandlerException ex) {
@@ -288,8 +314,8 @@ public abstract class Enricher {
                 getIndex().getRecursive(uris, (final Value v) -> {
                     return matches(v, this.recursiveNamespaces);
                 }, RDFHandlers.wrap(model));
-                LOGGER.debug("Enriched {} URIs with {} triples", uris.size(), model.size()
-                        - numTriplesBefore);
+                LOGGER.debug("Enriched {} URIs with {} triples", uris.size(),
+                        model.size() - numTriplesBefore);
             } catch (final RDFHandlerException ex) {
                 Throwables.propagate(ex);
             }
@@ -303,9 +329,8 @@ public abstract class Enricher {
         }
 
         private void collect(final Set<URI> set, final Value value) {
-            if (value instanceof URI
-                    && (matches(value, this.nonRecursiveNamespaces) || matches(value,
-                            this.recursiveNamespaces))) {
+            if (value instanceof URI && (matches(value, this.nonRecursiveNamespaces)
+                    || matches(value, this.recursiveNamespaces))) {
                 set.add((URI) value);
             }
         }
@@ -329,6 +354,35 @@ public abstract class Enricher {
                 this.index = new KeyQuadIndex(this.indexPath.toFile());
             }
             return this.index;
+        }
+
+    }
+
+    private static final class RDFProcessorEnricher extends Enricher {
+
+        private final RDFProcessor processor;
+
+        RDFProcessorEnricher(final RDFProcessor processor) {
+            this.processor = Objects.requireNonNull(processor);
+        }
+
+        @Override
+        public void enrich(final QuadModel model) {
+
+            // Take a snapshot of the model content, then clear the model
+            final List<Statement> stmts = new ArrayList<>(model);
+            model.clear();
+
+            try {
+                // Apply the processor to the snapshot, writing the result back to the model
+                this.processor.apply(RDFSources.wrap(stmts), RDFHandlers.wrap(model), 1);
+            } catch (final RDFHandlerException ex) {
+                Throwables.propagate(ex);
+            }
+
+            // Log outcome
+            LOGGER.debug("Transformed {} input triples to {} output triples", stmts.size(),
+                    model.size());
         }
 
     }
