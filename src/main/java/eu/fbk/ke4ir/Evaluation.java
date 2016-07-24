@@ -242,11 +242,16 @@ final class Evaluation {
                 }
 
                 // Perform the test and store the p-value
-                if ("ttest".equalsIgnoreCase(this.statisticalTest)) {
-                    pvals[i] = (float) new TTest().pairedTTest(baselineVector, settingVector);
-                } else if ("ar".equalsIgnoreCase(this.statisticalTest)) {
-                    pvals[i] = (float) ApproximateRandomization.test(1000, baselineVector,
-                            settingVector);
+                pvals[i] = Float.NaN;
+                try {
+                    if ("ttest".equalsIgnoreCase(this.statisticalTest)) {
+                        pvals[i] = (float) new TTest().pairedTTest(baselineVector, settingVector);
+                    } else if ("ar".equalsIgnoreCase(this.statisticalTest)) {
+                        pvals[i] = (float) ApproximateRandomization.test(1000, baselineVector,
+                                settingVector);
+                    }
+                } catch (Throwable ex) {
+                    LOGGER.error("Error running statistical test '" + statisticalTest + "'", ex);
                 }
             }
 
