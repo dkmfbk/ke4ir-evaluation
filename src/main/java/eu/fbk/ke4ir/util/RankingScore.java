@@ -210,9 +210,9 @@ public class RankingScore implements Serializable {
                     .append(String.format("%.3f", getPrecision(n))).append(" ");
         }
         builder.append("mrr=").append(String.format("%.3f", getMRR())).append(" ");
-        builder.append("ndcg=").append(String.format("%.3f", getNDCG())).append(" ");
+        builder.append("ndcg=").append(String.format("%.3f", getAltNDCG())).append(" ");
         builder.append("ndcg@").append(maxN).append("=")
-                .append(String.format("%.3f", getNDCG(maxN))).append(" ");
+                .append(String.format("%.3f", getAltNDCG(maxN))).append(" ");
         builder.append("map=").append(String.format("%.3f", getMAP())).append(" ");
         builder.append("map@").append(maxN).append("=").append(String.format("%.3f", getMAP(n)))
                 .append(" ");
@@ -290,14 +290,14 @@ public class RankingScore implements Serializable {
                 evaluator.add(s);
                 System.out.println(key + "\t" + s.getPrecision(1) + "\t" + s.getPrecision(3)
                         + "\t" + s.getPrecision(5) + "\t" + s.getPrecision(10) + "\t" + s.getMRR()
-                        + "\t" + s.getNDCG() + "\t" + s.getNDCG(10) + "\t" + s.getMAP() + "\t"
+                        + "\t" + s.getAltNDCG() + "\t" + s.getAltNDCG(10) + "\t" + s.getMAP() + "\t"
                         + s.getMAP(10));
             }
             final RankingScore s = evaluator.get();
             System.out
                     .println("ALL\t" + s.getPrecision(1) + "\t" + s.getPrecision(3) + "\t"
                             + s.getPrecision(5) + "\t" + s.getPrecision(10) + "\t" + s.getMRR()
-                            + "\t" + s.getNDCG() + "\t" + s.getNDCG(10) + "\t" + s.getMAP() + "\t"
+                            + "\t" + s.getAltNDCG() + "\t" + s.getAltNDCG(10) + "\t" + s.getMAP() + "\t"
                             + s.getMAP(10));
 
         } catch (final Throwable ex) {
