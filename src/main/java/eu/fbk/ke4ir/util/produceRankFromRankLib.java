@@ -22,6 +22,9 @@ public class produceRankFromRankLib {
 
 
 
+
+
+
     public static void main(final String... args) throws IOException {
 
 
@@ -38,18 +41,6 @@ public class produceRankFromRankLib {
 
         boolean withScores = cmd.hasOption("s");
 
-        final Map<String, Map<String, Double>> rank = Maps.newHashMap();
-        for (final String line : Files.readAllLines(cmd.getOptionValue("i",  Path.class))) {
-            final String[] tokens = line.split("[\\s+,;]+");
-            Map<String, Double> map = Maps.newHashMap();
-
-            if (rank.containsKey(tokens[0])){
-                map=rank.get(tokens[0]);
-            }
-            map.put(tokens[1],Double.parseDouble(tokens[2]));
-            rank.put(tokens[0], map);
-        }
-
 
 
         final Map<String, Map<String, String>> mapIDdocs = Maps.newHashMap();
@@ -59,7 +50,7 @@ public class produceRankFromRankLib {
             final String[] tokens = line.split("[\\s+,;]+");
             if (!tokens[0].equals("#")) {
                 Map<String, String> map = Maps.newHashMap();
-                String query = tokens[1].replace("qid:", "");
+                String query = tokens[1].replace("qid:", "q");
 
                 if (!query.equals(prev_query)) {
                     i = 0;
@@ -75,6 +66,24 @@ public class produceRankFromRankLib {
         }
 
 
+        final Map<String, Map<String, Double>> rank = Maps.newHashMap();
+        for (final String line : Files.readAllLines(cmd.getOptionValue("i",  Path.class))) {
+            final String[] tokens = line.split("[\\s+,;]+");
+            Map<String, Double> map = Maps.newHashMap();
+            String query = "q"+tokens[0];
+            if (rank.containsKey(query)){
+                map=rank.get(query);
+            }
+            String doc = mapIDdocs.get(query).get(tokens[1]);
+            //System.out.println(doc);
+            map.put(doc,Double.parseDouble(tokens[2]));
+            rank.put(query, map);
+        }
+
+
+
+
+
 
 
 
@@ -84,11 +93,23 @@ public class produceRankFromRankLib {
             TreeSet<String> ts = new TreeSet<String>(rank.keySet());
 
             for(String query : ts){
-                String line = "q"+query+"\t";
-                rank.put(query,sortByValue(rank.get(query)));
-                for(String doc : rank.get(query).keySet())
-                    if (withScores) line +=mapIDdocs.get(query).get(doc)+" ["+rank.get(query).get(doc)+"]"+"\t";
-                    else  line +=mapIDdocs.get(query).get(doc)+"\t";
+                String line = query+"\t";
+                //rank.put(query,sortByValue(rank.get(query)));
+
+                final Comparator<Map.Entry<String, Double>> byValue =
+                        Comparator.comparing(Map.Entry::getValue, Comparator.reverseOrder());
+                final Comparator<Map.Entry<String, Double>> byKey =
+                        Comparator.comparing(Map.Entry::getKey);
+
+                final List<String> orderedDocs = rank.get(query)
+                        .entrySet().stream().sequential()
+                        .sorted(byValue.thenComparing(byKey))
+                        .map(Map.Entry::getKey)
+                        .collect(Collectors.toList());
+
+                for(String doc : orderedDocs)
+                    if (withScores) line +=doc+" ["+rank.get(query).get(doc)+"]"+"\t";
+                    else  line +=doc+"\t";
                 line=line.trim();
                 //System.out.println(line);
                 writer.append(line+"\n");
@@ -106,23 +127,21 @@ public class produceRankFromRankLib {
 
     }
 
-    public static <K extends Comparable<? super K>, V extends Comparable<? super V>> Map<K, V>
-    sortByValue( Map<K, V> map )
+    public static Map<String, Double> sortByValue( Map<String, Double>  map )
     {
 
 
-        Map<K, V> result = new LinkedHashMap<>();
-        Stream<Map.Entry<K, V>> st = map.entrySet().stream();
+        Map<String, Double>  result = new LinkedHashMap<>();
+        Stream<Map.Entry<String, Double> > st = map.entrySet().stream();
 
-        st.sorted( new Comparator<Map.Entry<K, V>>() {
+        st.sorted( new Comparator<Map.Entry<String, Double> >() {
 
-        public int compare(Map.Entry<K, V> a, Map.Entry<K, V> b) {
-            int cmp1 = -1*a.getValue().compareTo(b.getValue());
-            if (cmp1 != 0) {
-                return cmp1;
-            } else {
-                return a.getKey().compareTo(b.getKey());
+        public int compare(Map.Entry<String, Double>  a, Map.Entry<String, Double>  b) {
+            int result = -1 * Double.compare(a.getValue(),b.getValue());
+            if (result == 0) {
+                result = a.getKey().compareTo(b.getKey());
             }
+            return result;
         }
 
     }).forEachOrdered( e -> result.put(e.getKey(), e.getValue()) );
