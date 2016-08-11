@@ -726,29 +726,21 @@ public class KE4IR {
         }
         final String queryString = builder.toString();
 
-        //            // Skip evaluation if the query is empty
-        //            if (queryString.isEmpty()) {
-        //                continue;
-        //            }
-
         // Evaluate the query
         final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
         final Query query = parser.parse(queryString);
         final TopDocs results = searcher.search(query, 1000);
         LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length, queryString);
 
-        final List<Entry<String, TermVector>> entries = new ArrayList<>();
-
         // Populate the matches multimap. This requires mapping the numerical doc ID to
-        // the corresponding String one. We also retrieve the associated Lucene document
-        // and cache the document term vector for later reuse.
+        // the corresponding String one.
+        final List<Entry<String, TermVector>> entries = new ArrayList<>();
         for (final ScoreDoc scoreDoc : results.scoreDocs) {
-            final Document doc = searcher.doc(scoreDoc.doc, ImmutableSet.of("id"));
+            final Document doc = searcher.doc(scoreDoc.doc);
             final String id = doc.get("id");
             final TermVector vector = TermVector.read(doc);
             entries.add(new SimpleEntry<>(id, vector));
         }
-
         return entries;
     }
 
