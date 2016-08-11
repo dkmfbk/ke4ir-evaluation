@@ -26,6 +26,7 @@ import com.google.common.primitives.Doubles;
 import org.apache.commons.math3.stat.inference.TTest;
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.TermContext;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
@@ -68,12 +69,9 @@ final class Evaluation {
 
     private final int baselineIndex;
 
-    private final Map<String, TermVector> documentVectors;
-
     public Evaluation(final IndexSearcher searcher, final Ranker ranker,
             final Iterable<String> layers, final Iterable<String> baselineLayers,
-            final Measure sortMeasure, final String statisticalTest,
-            final Map<String, TermVector> documentVectors) {
+            final Measure sortMeasure, final String statisticalTest) {
 
         final List<String> layerList = ImmutableList.copyOf(layers);
         final String[][] settings = new String[(1 << layerList.size()) - 1][];
@@ -100,11 +98,11 @@ final class Evaluation {
         this.statisticalTest = statisticalTest;
         this.settings = settings;
         this.baselineIndex = baselineIndex;
-        this.documentVectors = documentVectors;
     }
 
     public void run(final Map<String, TermVector> queries,
-            final Map<String, Map<String, Double>> rels, final Path resultPath) throws IOException {
+            final Map<String, Map<String, Double>> rels, final Path resultPath)
+            throws IOException {
 
         // Compute the statistics to be fed to ranker, based on supplied queries
         final Ranker.Statistics statistics = computeStatistics(queries.values());
@@ -250,8 +248,9 @@ final class Evaluation {
                         pvals[i] = (float) ApproximateRandomization.test(1000, baselineVector,
                                 settingVector);
                     }
-                } catch (Throwable ex) {
-                    LOGGER.error("Error running statistical test '" + statisticalTest + "'", ex);
+                } catch (final Throwable ex) {
+                    LOGGER.error("Error running statistical test '" + this.statisticalTest + "'",
+                            ex);
                 }
             }
 
@@ -269,8 +268,8 @@ final class Evaluation {
         final RankingScore[] sortedScores = scores.clone();
         final int[] indexes = sort(sortedScores, RankingScore.comparator(this.sortMeasure, true));
 
-        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(resultPath.resolve("aggregates.csv")
-                .toAbsolutePath().toString())))) {
+        try (Writer writer = IO.utf8Writer(IO.buffer(
+                IO.write(resultPath.resolve("aggregates.csv").toAbsolutePath().toString())))) {
             writer.append("setting");
             for (final Measure measure : REPORTED_MEASURES) {
                 writer.append(";").append(measure.toString()).append(";p-value");
@@ -291,9 +290,16 @@ final class Evaluation {
             final Iterable<QueryEvaluation> evaluations, final int settingIndex)
             throws IOException {
 
-        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(resultPath
-                .resolve("setting-" + Joiner.on('-').join(this.settings[settingIndex]) + ".csv")
-                .toAbsolutePath().toString())))) {
+        try (Writer writer = IO
+                .utf8Writer(
+                        IO.buffer(
+                                IO.write(
+                                        resultPath
+                                                .resolve("setting-"
+                                                        + Joiner.on('-')
+                                                                .join(this.settings[settingIndex])
+                                                        + ".csv")
+                                                .toAbsolutePath().toString())))) {
             writer.append("query");
             for (final Measure measure : REPORTED_MEASURES) {
                 writer.append(";").append(measure.toString());
@@ -308,8 +314,8 @@ final class Evaluation {
                     writer.append(";").append(Double.toString(score.get(measure)));
                 }
                 writer.append(';');
-                writer.append(Joiner.on(" ").join(
-                        Iterables.limit(Arrays.asList(evaluation.hits[settingIndex]), 10)));
+                writer.append(Joiner.on(" ")
+                        .join(Iterables.limit(Arrays.asList(evaluation.hits[settingIndex]), 10)));
                 writer.append(';');
                 writer.append(Joiner.on(" ").join(queryLayers));
                 writer.append('\n');
@@ -344,8 +350,8 @@ final class Evaluation {
                     writer.append(";").append(Double.toString(score.get(measure)));
                 }
                 writer.append(';');
-                writer.append(Joiner.on(" ").join(
-                        Iterables.limit(Arrays.asList(evaluation.hits[index]), 10)));
+                writer.append(Joiner.on(" ")
+                        .join(Iterables.limit(Arrays.asList(evaluation.hits[index]), 10)));
                 writer.append(';');
                 writer.append(Joiner.on(" ").join(queryLayers));
                 writer.append('\n');
@@ -369,8 +375,9 @@ final class Evaluation {
         }
 
         // Write file
-        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(resultPath
-                .resolve("ranking-" + evaluation.queryID + ".csv").toAbsolutePath().toString())))) {
+        try (Writer writer = IO.utf8Writer(
+                IO.buffer(IO.write(resultPath.resolve("ranking-" + evaluation.queryID + ".csv")
+                        .toAbsolutePath().toString())))) {
 
             // Write header
             for (final String layer : layers) {
@@ -421,8 +428,8 @@ final class Evaluation {
                 builder.append(String.format("\n  %-40s",
                         Joiner.on(',').join(this.settings[indexes[i]])));
                 for (final Measure measure : REPORTED_MEASURES) {
-                    builder.append(String.format(" %s=%.3f/", measure.toString(),
-                            score.get(measure)));
+                    builder.append(
+                            String.format(" %s=%.3f/", measure.toString(), score.get(measure)));
                     if (indexes[i] == this.baselineIndex) {
                         builder.append("-----");
                     } else {
@@ -556,11 +563,9 @@ final class Evaluation {
                     synchronized (this.cachedDocumentIDs) {
                         docID = this.cachedDocumentIDs.get(scoreDoc.doc);
                         if (docID == null) {
-                            final Document doc = Evaluation.this.searcher.doc(scoreDoc.doc,
-                                    ImmutableSet.of("id"));
+                            final Document doc = Evaluation.this.searcher.doc(scoreDoc.doc);
                             docID = doc.get("id");
-                            final TermVector docVector = Evaluation.this.documentVectors
-                                    .get(docID);
+                            final TermVector docVector = TermVector.read(doc);
                             // final Document doc = Evaluation.this.searcher.doc(scoreDoc.doc);
                             // docID = doc.get("id");
                             // final TermVector docVector = toTermVector(doc);
@@ -636,14 +641,13 @@ final class Evaluation {
                 int numHits = 0;
                 for (int i = 0; i < Evaluation.this.settings.length; ++i) {
                     numHits = Math.max(numHits, this.hits[i].length);
-                    if (bestIndex < 0
-                            || RankingScore.comparator(Evaluation.this.sortMeasure, true).compare(
-                                    this.scores[i], this.scores[bestIndex]) <= 0) {
+                    if (bestIndex < 0 || RankingScore.comparator(Evaluation.this.sortMeasure, true)
+                            .compare(this.scores[i], this.scores[bestIndex]) <= 0) {
                         bestIndex = i;
                     }
                 }
-                LOGGER.info("Evaluated {} - {} hits, best: {} {}", this.queryID, String.format(
-                        "%4d", numHits), this.scores[bestIndex],
+                LOGGER.info("Evaluated {} - {} hits, best: {} {}", this.queryID,
+                        String.format("%4d", numHits), this.scores[bestIndex],
                         Joiner.on(',').join(Evaluation.this.settings[bestIndex]));
             }
         }

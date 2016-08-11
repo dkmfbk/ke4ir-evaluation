@@ -1,5 +1,6 @@
 package eu.fbk.ke4ir;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
@@ -16,6 +17,7 @@ import java.util.AbstractMap.SimpleEntry;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -27,7 +29,6 @@ import java.util.stream.Stream;
 import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import com.google.common.io.ByteStreams;
@@ -80,8 +81,8 @@ public class KE4IR {
 
     private static final Pattern NAF_PATTERN = Pattern.compile("\\.naf(\\.(gz|bz2|xz|7z))?$");
 
-    private static final Pattern RDF_PATTERN = Pattern
-            .compile("\\.(rdf|rj|jsonld|nt|nq|trix|trig|tql|ttl|n3|brf)" + "(\\.(gz|bz2|xz|7z))?$");
+    private static final Pattern RDF_PATTERN = Pattern.compile(
+            "\\.(rdf|rj|jsonld|nt|nq|trix|trig|tql|ttl|n3|brf)" + "(\\.(gz|bz2|xz|7z))?$");
 
     private final Path pathDocsNAF;
 
@@ -123,9 +124,7 @@ public class KE4IR {
 
         try {
             // Parse command line
-            final CommandLine cmd = CommandLine
-                    .parser()
-                    .withName("ke4ir-eval")
+            final CommandLine cmd = CommandLine.parser().withName("ke4ir-eval")
                     .withOption("p", "properties", "specifies the configuration properties file",
                             "PATH", CommandLine.Type.FILE_EXISTING, true, false, false)
                     .withOption("e", "enrich", "enriches the RDF of both documents and queries")
@@ -142,7 +141,8 @@ public class KE4IR {
                     .withOption("r", "rerank", "dump 4 rerank")
                     .withHeader("supports all the operations involved in the evaluation of " //
                             + "semantic information retrieval: enrichment, analysis, " //
-                            + "indexing, search").parse(args);
+                            + "indexing, search")
+                    .parse(args);
 
             // Extract options
             final Path propertiesPath = Paths.get(cmd.getOptionValue("p", String.class,
@@ -157,8 +157,8 @@ public class KE4IR {
 
             // Abort if properties file does not exist
             if (!Files.exists(propertiesPath)) {
-                throw new CommandLine.Exception("Properties file '" + propertiesPath
-                        + "' does not exist");
+                throw new CommandLine.Exception(
+                        "Properties file '" + propertiesPath + "' does not exist");
             }
 
             // Read properties
@@ -240,8 +240,8 @@ public class KE4IR {
         this.pathDocsNAF = root.resolve(properties.getProperty(pr + "docs.naf", "docs/naf"));
         this.pathDocsRDF = root.resolve(properties.getProperty(pr + "docs.rdf", "docs/rdf"));
         this.pathDocsRDFE = root.resolve(properties.getProperty(pr + "docs.rdfe", "docs/rdfe"));
-        this.pathDocsTerms = root.resolve(properties.getProperty(pr + "docs.terms",
-                "docs/terms.tsv.gz"));
+        this.pathDocsTerms = root
+                .resolve(properties.getProperty(pr + "docs.terms", "docs/terms.tsv.gz"));
 
         // Retrieve queries paths
         this.pathQueriesNAF = root.resolve(properties.getProperty( //
@@ -266,10 +266,10 @@ public class KE4IR {
                 .splitToList(properties.getProperty(pr + "layers"));
 
         // Retrieve evaluation settings
-        this.evalSortMeasure = RankingScore.Measure.create(properties.getProperty(
-                pr + "results.sort", "map").trim());
-        this.evalBaseline = ImmutableSet.copyOf(properties.getProperty(pr + "results.baseline",
-                "textual").split("\\s+"));
+        this.evalSortMeasure = RankingScore.Measure
+                .create(properties.getProperty(pr + "results.sort", "map").trim());
+        this.evalBaseline = ImmutableSet
+                .copyOf(properties.getProperty(pr + "results.baseline", "textual").split("\\s+"));
         this.evalStatisticalTest = properties.getProperty(pr + "results.test", "ttest").trim()
                 .toLowerCase();
 
@@ -326,8 +326,8 @@ public class KE4IR {
             }
         });
 
-        LOGGER.info("Done in {} ms ({} triples in, {} triples out)", System.currentTimeMillis()
-                - ts, inTriples, outTriples);
+        LOGGER.info("Done in {} ms ({} triples in, {} triples out)",
+                System.currentTimeMillis() - ts, inTriples, outTriples);
     }
 
     public void analyzeDocs() throws IOException {
@@ -349,8 +349,8 @@ public class KE4IR {
         LOGGER.info(message);
 
         final int nafPrefixLength = pathNAF.toAbsolutePath().toString().length() + 1;
-        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(pathTerms.toAbsolutePath()
-                .toString())))) {
+        try (Writer writer = IO
+                .utf8Writer(IO.buffer(IO.write(pathTerms.toAbsolutePath().toString())))) {
             forEachFile(pathNAF, NAF_PATTERN, (final Path path) -> {
                 final String relativePath = path.toAbsolutePath().toString() //
                         .substring(nafPrefixLength);
@@ -369,7 +369,7 @@ public class KE4IR {
                             IO.utf8Reader(new ByteArrayInputStream(bytes)));
                     String id = document.getPublic().publicId;
                     if (id == null) {
-                        URI uri = new URIImpl(document.getPublic().uri);
+                        final URI uri = new URIImpl(document.getPublic().uri);
                         id = uri.getLocalName();
                     }
                     final TermVector.Builder builder = TermVector.builder();
@@ -377,7 +377,7 @@ public class KE4IR {
                     final TermVector vector = builder.build();
                     outTerms.addAndGet(vector.size());
                     synchronized (writer) {
-                        TermVector.write(writer, ImmutableMap.of(id, vector));
+                        vector.write(writer, id);
                     }
                     LOGGER.info("Analyzed {} - {} terms from {} tokens, {} triples", path,
                             vector.size(), document.getTerms().size(), model.size());
@@ -398,40 +398,37 @@ public class KE4IR {
         // Create index directory if necessary and wipe out existing directory contents
         initDir(this.pathIndex);
 
-        // TODO: avoid loading everything into RAM; parallelize
-        Map<String, TermVector> vectors = Maps.newHashMap();
-        try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(this.pathDocsTerms.toAbsolutePath()
-                .toString())))) {
-            vectors = TermVector.read(reader);
-        }
-
         final FSDirectory indexDir = FSDirectory.open(this.pathIndex);
         final IndexWriterConfig config = new IndexWriterConfig(new KeywordAnalyzer());
         config.setSimilarity(FakeSimilarity.INSTANCE);
 
+        int numDocs = 0;
         int numTerms = 0;
-        try (IndexWriter writer = new IndexWriter(indexDir, config)) {
-            for (final Map.Entry<String, TermVector> entry : vectors.entrySet()) {
 
-                final String docID = entry.getKey();
-                final TermVector docVector = entry.getValue();
+        try (BufferedReader reader = new BufferedReader(
+                IO.utf8Reader(IO.read(this.pathDocsTerms.toAbsolutePath().toString())))) {
+            try (IndexWriter writer = new IndexWriter(indexDir, config)) {
+                Map.Entry<String, TermVector> entry;
+                while ((entry = TermVector.read(reader)) != null) {
 
-                LOGGER.info("Indexing {} - {} terms", docID, entry.getValue().size());
+                    final String id = entry.getKey();
+                    final TermVector vector = entry.getValue();
 
-                final Document doc = new Document();
-                doc.add(new TextField("id", docID, Store.YES));
-                for (final Term term : docVector.getTerms()) {
-                    for (int i = 0; i < term.getFrequency(); ++i) {
-                        doc.add(new TextField(term.getField(), term.getValue(), Store.YES));
-                    }
-                    ++numTerms;
+                    LOGGER.info("Indexing {} - {} terms", id, entry.getValue().size());
+
+                    final Document doc = new Document();
+                    doc.add(new TextField("id", id, Store.YES));
+                    vector.write(doc);
+                    writer.addDocument(doc);
+
+                    numTerms += vector.size();
+                    numDocs++;
                 }
-                writer.addDocument(doc);
             }
         }
 
-        LOGGER.info("Done in {} ms ({} documents, {} terms added)", System.currentTimeMillis()
-                - ts, vectors.size(), numTerms);
+        LOGGER.info("Done in {} ms ({} documents, {} terms added)",
+                System.currentTimeMillis() - ts, numDocs, numTerms);
     }
 
     public void search() throws IOException {
@@ -445,13 +442,6 @@ public class KE4IR {
         // Read queries
         final Map<String, TermVector> queries = readQueries(this.pathQueriesTerms);
 
-        // Read document vectors // TODO: this data should be loaded from the index on demand!
-        Map<String, TermVector> documents;
-        try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(this.pathDocsTerms.toAbsolutePath()
-                .toString())))) {
-            documents = TermVector.read(reader);
-        }
-
         // Create results directory if necessary and wipe out existing content
         initDir(this.pathResults);
 
@@ -459,53 +449,42 @@ public class KE4IR {
             final IndexSearcher searcher = new IndexSearcher(reader);
             searcher.setSimilarity(FakeSimilarity.INSTANCE);
             new Evaluation(searcher, this.ranker, this.layers, this.evalBaseline,
-                    this.evalSortMeasure, this.evalStatisticalTest, documents).run(queries, rels,
-                    this.pathResults);
+                    this.evalSortMeasure, this.evalStatisticalTest).run(queries, rels,
+                            this.pathResults);
         }
 
         LOGGER.info("Done in {} ms", System.currentTimeMillis() - ts);
     }
-
-
 
     public void dump4Reranker() throws IOException, ParseException {
 
         final long ts = System.currentTimeMillis();
         LOGGER.info("=== Dump 4 Rerank Lucene index ===");
 
+        final List<SimpleEntry<String, String>> features = new ArrayList<>();
+        features.add(new SimpleEntry<String, String>("textual", "tdf"));
+        features.add(new SimpleEntry<String, String>("time", "tdf"));
+        features.add(new SimpleEntry<String, String>("type", "tdf"));
+        features.add(new SimpleEntry<String, String>("frame", "tdf"));
+        features.add(new SimpleEntry<String, String>("uri", "tdf"));
 
-        List<SimpleEntry<String,String>> features = new ArrayList<>();
-        features.add(new SimpleEntry<String,String>("textual", "tdf"));
-        features.add(new SimpleEntry<String,String>("time", "tdf"));
-        features.add(new SimpleEntry<String,String>("type", "tdf"));
-        features.add(new SimpleEntry<String,String>("frame", "tdf"));
-        features.add(new SimpleEntry<String,String>("uri", "tdf"));
+        features.add(new SimpleEntry<String, String>("textual", "idf"));
+        features.add(new SimpleEntry<String, String>("time", "idf"));
+        features.add(new SimpleEntry<String, String>("type", "idf"));
+        features.add(new SimpleEntry<String, String>("frame", "idf"));
+        features.add(new SimpleEntry<String, String>("uri", "idf"));
 
-        features.add(new SimpleEntry<String,String>("textual", "idf"));
-        features.add(new SimpleEntry<String,String>("time", "idf"));
-        features.add(new SimpleEntry<String,String>("type", "idf"));
-        features.add(new SimpleEntry<String,String>("frame", "idf"));
-        features.add(new SimpleEntry<String,String>("uri", "idf"));
-
-        features.add(new SimpleEntry<String,String>("textual", "sim"));
-        features.add(new SimpleEntry<String,String>("time", "sim"));
-        features.add(new SimpleEntry<String,String>("type", "sim"));
-        features.add(new SimpleEntry<String,String>("frame", "sim"));
-        features.add(new SimpleEntry<String,String>("uri", "sim"));
-
+        features.add(new SimpleEntry<String, String>("textual", "sim"));
+        features.add(new SimpleEntry<String, String>("time", "sim"));
+        features.add(new SimpleEntry<String, String>("type", "sim"));
+        features.add(new SimpleEntry<String, String>("frame", "sim"));
+        features.add(new SimpleEntry<String, String>("uri", "sim"));
 
         // Read relevances
         final Map<String, Map<String, Double>> rels = readRelevances(this.pathQueriesRelevances);
 
         // Read queries
         final Map<String, TermVector> queries = readQueries(this.pathQueriesTerms);
-
-        // Read document vectors // TODO: this data should be loaded from the index on demand!
-        Map<String, TermVector> documents;
-        try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(this.pathDocsTerms.toAbsolutePath()
-                .toString())))) {
-            documents = TermVector.read(reader);
-        }
 
         // Create results directory if necessary and wipe out existing content
         //initDir(this.pathResults);
@@ -515,49 +494,48 @@ public class KE4IR {
             searcher.setSimilarity(FakeSimilarity.INSTANCE);
             //todo
 
-            final Map<String, Map<String, Map<String,Map<String, Double>>>> rankmap = Maps.newHashMap(); //<query, <doc, <layer,value>>>
+            final Map<String, Map<String, Map<String, Map<String, Double>>>> rankmap = Maps
+                    .newHashMap(); //<query, <doc, <layer,value>>>
 
+            for (final Map.Entry<String, TermVector> queryEntry : queries.entrySet()) {
+                final String qid = queryEntry.getKey();
+                final TermVector qv = queryEntry.getValue();
 
-            for (Map.Entry<String,TermVector> queryEntry: queries.entrySet()){
-                String qid = queryEntry.getKey();
-                TermVector qv = queryEntry.getValue();
+                final List<Entry<String, TermVector>> docs = matchDocuments(searcher, qv);
+                //    for (String ID:rels.get(qid).keySet()){
+                //        if (!docs.contains(ID)) docs.add(ID);
+                //    }
 
-                List<String> docs = matchDocuments(searcher,qv);
-//                for (String ID:rels.get(qid).keySet()){
-//                    if (!docs.contains(ID)) docs.add(ID);
-//                }
+                final Map<String, Map<String, Map<String, Double>>> q_map = Maps.newHashMap(); //<doc, <layer,value>>
 
-                final Map<String, Map<String,Map<String, Double>>> q_map = Maps.newHashMap(); //<doc, <layer,value>>
+                for (final Entry<String, TermVector> de : docs) {
 
-                for (String did:docs){
-                    TermVector dv = documents.get(did);
+                    final String did = de.getKey();
+                    final TermVector dv = de.getValue();
 
                     // Allocate the array of document scores, one element for each document vector
-                    //final float[] scores = new float[docVectors.length];
+                    // final float[] scores = new float[docVectors.length];
 
                     // We compute the score of each document by iterating first on query terms (so that
                     // some state can be saved and reused) and then on document vectors. The relative
                     // order of the two iterations is irrelevant.
 
-
-                    final Map<String,Map<String, Double>> qd_map = Maps.newHashMap(); //<layer,<type,value>>
-//                    final Map<String, Double> idf_qd_map = Maps.newHashMap();
-//                    final Map<String, Double> sim_qd_map = Maps.newHashMap();
-
-
-
+                    final Map<String, Map<String, Double>> qd_map = Maps.newHashMap(); //<layer,<type,value>>
+                    //    final Map<String, Double> idf_qd_map = Maps.newHashMap();
+                    //    final Map<String, Double> sim_qd_map = Maps.newHashMap();
 
                     for (final Term queryTerm : qv.getTerms()) {
 
                         // Retrieve the number of documents from Lucene statistics
-                        final long numDocs = searcher.collectionStatistics(queryTerm.getField()).docCount();
+                        final long numDocs = searcher.collectionStatistics(queryTerm.getField())
+                                .docCount();
 
                         // Extract term layer and associated weight.
                         final String layer = queryTerm.getField();
                         //final float weight = weights.getOrDefault(layer, 0.0f);
 
                         // Extract the document frequency (# documents having that term in the index)
-                        TermStatistics stats = getTermStatistics(queryTerm,searcher);
+                        final TermStatistics stats = getTermStatistics(queryTerm, searcher);
 
                         final long docFreq = stats.docFreq();
 
@@ -581,227 +559,208 @@ public class KE4IR {
                         //qid, did, layer, value....
 
                         //empty layer
-                        if (!qd_map.containsKey(layer)){
-                            Map<String, Double> qd_map_entry = Maps.newHashMap();
-                            qd_map.put(layer,qd_map_entry);
+                        if (!qd_map.containsKey(layer)) {
+                            final Map<String, Double> qd_map_entry = Maps.newHashMap();
+                            qd_map.put(layer, qd_map_entry);
                         }
-                        Map<String, Double> qd_map_entry = qd_map.get(layer);
+                        final Map<String, Double> qd_map_entry = qd_map.get(layer);
 
-                        double tdfscore=0;
-                        if (qd_map_entry.containsKey("tdf")){
-                            tdfscore=qd_map_entry.get("tdf");
+                        double tdfscore = 0;
+                        if (qd_map_entry.containsKey("tdf")) {
+                            tdfscore = qd_map_entry.get("tdf");
                         }
                         tdfscore += tfd * tfq;
-                        qd_map_entry.put("tdf",tdfscore);
+                        qd_map_entry.put("tdf", tdfscore);
 
-                        double idfscore=0;
-                        if (qd_map_entry.containsKey("idf")){
-                            idfscore=qd_map_entry.get("idf");
+                        double idfscore = 0;
+                        if (qd_map_entry.containsKey("idf")) {
+                            idfscore = qd_map_entry.get("idf");
                         }
                         idfscore += idf * idf;
-                        qd_map_entry.put("idf",idfscore);
+                        qd_map_entry.put("idf", idfscore);
 
-                        double simscore=0;
-                        if (qd_map_entry.containsKey("sim")){
-                            simscore=qd_map_entry.get("sim");
+                        double simscore = 0;
+                        if (qd_map_entry.containsKey("sim")) {
+                            simscore = qd_map_entry.get("sim");
                         }
                         simscore += tfd * tfq * idf * idf;
-                        qd_map_entry.put("sim",simscore);
-                        qd_map.put(layer,qd_map_entry);
+                        qd_map_entry.put("sim", simscore);
+                        qd_map.put(layer, qd_map_entry);
 
                     }
 
-                    q_map.put(did,qd_map);
-
+                    q_map.put(did, qd_map);
 
                 }
-                rankmap.put(qid,q_map);
+                rankmap.put(qid, q_map);
             }
 
-
-
-
-            try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
-                    .resolve("reranker.txt")
-                    .toAbsolutePath().toString())))) {
-
+            try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(
+                    this.pathResults.resolve("reranker.txt").toAbsolutePath().toString())))) {
 
                 String header = "# COLUMN EXPLANATION: rel qid ";
                 for (int i = 0; i < features.size(); i++) {
-                    double measure = 0.0;
-                    String layer = features.get(i).getKey();
-                    String mes4layer = features.get(i).getValue();
+                    // final double measure = 0.0;
+                    final String layer = features.get(i).getKey();
+                    final String mes4layer = features.get(i).getValue();
                     header += "(" + layer + "," + mes4layer + ") ";
                 }
                 header += "# qid did ";
                 writer.append(header).append('\n');
 
+                final Stream<Map.Entry<String, Map<String, Map<String, Map<String, Double>>>>> sortedRankmap = rankmap
+                        .entrySet().stream();
+                sortedRankmap.sorted(Map.Entry.comparingByKey()).forEachOrdered(q -> {
 
-                Stream<Map.Entry<String, Map<String, Map<String, Map<String, Double>>>>> sortedRankmap = rankmap.entrySet().stream();
-                sortedRankmap.sorted(Map.Entry.comparingByKey())
-                        .forEachOrdered(q -> {
+                    final String qid = q.getKey();
+                    //System.out.println(qid);
+                    final Stream<Map.Entry<String, Map<String, Map<String, Double>>>> sortedDoc = q
+                            .getValue().entrySet().stream();
+                    sortedDoc.sorted(Map.Entry.comparingByKey()).forEachOrdered(d -> {
+                        final String did = d.getKey();
+                        //System.out.println(did);
+                        String line = "";
 
-                            String qid = q.getKey();
-                            //System.out.println(qid);
-                            Stream<Map.Entry<String, Map<String, Map<String, Double>>>> sortedDoc = q.getValue().entrySet().stream();
-                            sortedDoc.sorted(Map.Entry.comparingByKey())
-                                    .forEachOrdered(d -> {
-                                        String did = d.getKey();
-                                        //System.out.println(did);
-                                        String line = "";
+                        //print relevance value
+                        int rel = 0;
+                        if (rels.containsKey(qid)) {
+                            if (rels.get(qid).containsKey(did)) {
+                                //rel = rels.get(qid).get(did).intValue()-1;
+                                rel = rels.get(qid).get(did).intValue();
+                            }
+                        }
+                        line += rel + " ";
 
-                                        //print relevance value
-                                        int rel = 0;
-                                        if (rels.containsKey(qid))
-                                            if (rels.get(qid).containsKey(did))
-                                                //rel = rels.get(qid).get(did).intValue()-1;
-                                                rel = rels.get(qid).get(did).intValue();
-                                        line += rel + " ";
+                        //print qid
+                        line += qid.replace("q", "qid:") + " ";
 
-                                        //print qid
-                                        line += qid.replace("q", "qid:") + " ";
+                        //print features
 
+                        for (int i = 0; i < features.size(); i++) {
+                            double measure = 0.0;
+                            final String layer = features.get(i).getKey();
+                            final String mes4layer = features.get(i).getValue();
 
-                                        //print features
+                            if (d.getValue().containsKey(layer)) {
+                                if (d.getValue().get(layer).containsKey(mes4layer)) {
+                                    measure = d.getValue().get(layer).get(mes4layer);
+                                }
+                            }
+                            line += i + 1 + ":" + measure + " ";
+                        }
 
-                                        for (int i = 0; i < features.size(); i++) {
-                                            double measure = 0.0;
-                                            String layer = features.get(i).getKey();
-                                            String mes4layer = features.get(i).getValue();
+                        //    int i=1;
+                        //    SortedSet<String> layers = new TreeSet<String>(d.getValue().keySet());
+                        //
+                        //    for (String layer:layers){
+                        //        System.out.println(layer);
+                        //        SortedSet<String> measures = new TreeSet<String>(d.getValue().get(layer).keySet());
+                        //        for (String measure:measures) {
+                        //            System.out.println(measure);
+                        //            line += i++ + ":" + d.getValue().get(layer).get(measure) + " ";
+                        //        }
+                        //    }
 
-                                            if (d.getValue().containsKey(layer)) {
-                                                if (d.getValue().get(layer).containsKey(mes4layer)) {
-                                                    measure = d.getValue().get(layer).get(mes4layer);
-                                                }
-                                            }
-                                            line += (i + 1) + ":" + measure + " ";
-                                        }
+                        //print comment end of line
+                        line += "# " + qid + " " + did;
 
-//                                    int i=1;
-//                                    SortedSet<String> layers = new TreeSet<String>(d.getValue().keySet());
-//
-//                                    for (String layer:layers){
-//                                        System.out.println(layer);
-//                                        SortedSet<String> measures = new TreeSet<String>(d.getValue().get(layer).keySet());
-//                                        for (String measure:measures) {
-//                                            System.out.println(measure);
-//                                            line += i++ + ":" + d.getValue().get(layer).get(measure) + " ";
-//                                        }
-//                                    }
+                        //print line
+                        //System.out.println(line);
+                        try {
+                            writer.append(line).append('\n');
+                        } catch (final IOException e) {
+                            e.printStackTrace();
+                        }
+                    });
 
-                                        //print comment end of line
-                                        line += "# " + qid + " " + did;
-
-                                        //print line
-                                        //System.out.println(line);
-                                        try {
-                                            writer.append(line).append('\n');
-                                        } catch (IOException e) {
-                                            e.printStackTrace();
-                                        }
-                                    });
-
-                        });
-
+                });
 
             }
-
 
             try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
-                    .resolve("qrels_trec_style.txt")
-                    .toAbsolutePath().toString())))) {
+                    .resolve("qrels_trec_style.txt").toAbsolutePath().toString())))) {
 
+                final Stream<Map.Entry<String, Map<String, Double>>> sortedRels = rels.entrySet()
+                        .stream();
+                sortedRels.sorted(Map.Entry.comparingByKey()).forEachOrdered(q -> {
 
-                Stream<Map.Entry<String, Map<String, Double>>> sortedRels = rels.entrySet().stream();
-                sortedRels.sorted(Map.Entry.comparingByKey())
-                        .forEachOrdered(q -> {
+                    final String qid = q.getKey();
+                    final Stream<Map.Entry<String, Double>> sortedDoc = q.getValue().entrySet()
+                            .stream();
+                    sortedDoc.sorted(Map.Entry.comparingByKey()).forEachOrdered(d -> {
+                        final int rel = d.getValue().intValue();
+                        if (rel > 0) {
+                            final String did = d.getKey();
+                            try {
+                                writer.append(
+                                        qid.replace("q", "") + " 0 " + did + " " + rel + "\n");
+                            } catch (final IOException e) {
+                                e.printStackTrace();
+                            }
+                        }
 
-                            String qid = q.getKey();
-                            Stream<Map.Entry<String, Double>> sortedDoc = q.getValue().entrySet().stream();
-                            sortedDoc.sorted(Map.Entry.comparingByKey())
-                                    .forEachOrdered( d -> {
-                                int rel=d.getValue().intValue();
-                                if (rel>0) {
-                                    String did = d.getKey();
-                                    try {
-                                        writer.append(qid.replace("q","")+" 0 "+did+" "+rel+"\n");
-                                    } catch (IOException e) {
-                                        e.printStackTrace();
-                                    }
-                                }
+                    });
 
-                            });
-
-                        });
-
+                });
 
             }
-
 
             //print
             //for (String qid:){
-
-
-
-
 
         }
 
         LOGGER.info("Done in {} ms", System.currentTimeMillis() - ts);
     }
 
+    private static List<Entry<String, TermVector>> matchDocuments(final IndexSearcher searcher,
+            final TermVector queryVector) throws IOException, ParseException {
 
+        // Compose the query string
+        final StringBuilder builder = new StringBuilder();
+        String separator = "";
+        for (final Term term : queryVector.getTerms()) {
+            builder.append(separator);
+            builder.append(term.getField()).append(":\"").append(term.getValue()).append("\"");
+            separator = " OR ";
+        }
+        final String queryString = builder.toString();
 
-    private static List<String> matchDocuments(IndexSearcher searcher, TermVector queryVector) throws IOException, ParseException {
+        //            // Skip evaluation if the query is empty
+        //            if (queryString.isEmpty()) {
+        //                continue;
+        //            }
 
-            // Compose the query string
-            final StringBuilder builder = new StringBuilder();
-            String separator = "";
-            for (final Term term : queryVector.getTerms()) {
-                builder.append(separator);
-                builder.append(term.getField()).append(":\"").append(term.getValue()).append("\"");
-                separator = " OR ";
-            }
-            final String queryString = builder.toString();
+        // Evaluate the query
+        final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
+        final Query query = parser.parse(queryString);
+        final TopDocs results = searcher.search(query, 1000);
+        LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length, queryString);
 
-//            // Skip evaluation if the query is empty
-//            if (queryString.isEmpty()) {
-//                continue;
-//            }
-
-            // Evaluate the query
-            final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
-            final Query query = parser.parse(queryString);
-            final TopDocs results = searcher.search(query, 1000);
-            LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length,
-                    queryString);
-
-            List<String> docs = new ArrayList<String>();
-
+        final List<Entry<String, TermVector>> entries = new ArrayList<>();
 
         // Populate the matches multimap. This requires mapping the numerical doc ID to
-            // the corresponding String one. We also retrieve the associated Lucene document
-            // and cache the document term vector for later reuse.
-            for (final ScoreDoc scoreDoc : results.scoreDocs) {
-                final Document doc = searcher.doc(scoreDoc.doc,
-                                ImmutableSet.of("id"));
-                docs.add(doc.get("id"));
-            }
+        // the corresponding String one. We also retrieve the associated Lucene document
+        // and cache the document term vector for later reuse.
+        for (final ScoreDoc scoreDoc : results.scoreDocs) {
+            final Document doc = searcher.doc(scoreDoc.doc, ImmutableSet.of("id"));
+            final String id = doc.get("id");
+            final TermVector vector = TermVector.read(doc);
+            entries.add(new SimpleEntry<>(id, vector));
+        }
 
-        return docs;
+        return entries;
     }
 
+    private static TermStatistics getTermStatistics(final Term term, final IndexSearcher searcher)
+            throws IOException {
 
-
-
-    private static TermStatistics getTermStatistics (Term term,IndexSearcher searcher) throws IOException {
-
-                    final String layer = term.getField();
-                    final String value = term.getValue();
-                    final org.apache.lucene.index.Term luceneTerm;
-                    luceneTerm = new org.apache.lucene.index.Term(layer, value);
-                    return searcher.termStatistics(luceneTerm, //
-                           TermContext.build(searcher.getTopReaderContext(), luceneTerm));
+        final String layer = term.getField();
+        final String value = term.getValue();
+        final org.apache.lucene.index.Term luceneTerm;
+        luceneTerm = new org.apache.lucene.index.Term(layer, value);
+        return searcher.termStatistics(luceneTerm, //
+                TermContext.build(searcher.getTopReaderContext(), luceneTerm));
     }
 
     private static Map<String, Map<String, Double>> readRelevances(final Path path)
@@ -826,9 +785,13 @@ public class KE4IR {
     }
 
     private static Map<String, TermVector> readQueries(final Path path) throws IOException {
-        Map<String, TermVector> queries = Maps.newHashMap();
-        try (Reader reader = IO.utf8Reader(IO.buffer(IO.read(path.toAbsolutePath().toString())))) {
-            queries = TermVector.read(reader);
+        final Map<String, TermVector> queries = Maps.newHashMap();
+        try (BufferedReader reader = new BufferedReader(
+                IO.utf8Reader(IO.read(path.toAbsolutePath().toString())))) {
+            Entry<String, TermVector> entry;
+            while ((entry = TermVector.read(reader)) != null) {
+                queries.put(entry.getKey(), entry.getValue());
+            }
         }
         return queries;
     }
@@ -836,8 +799,8 @@ public class KE4IR {
     private static QuadModel readTriples(final Path path) throws IOException {
         try {
             final QuadModel model = QuadModel.create();
-            RDFSources.read(false, true, null, null, path.toAbsolutePath().toString()).emit(
-                    new AbstractRDFHandlerWrapper(RDFHandlers.wrap(model)) {
+            RDFSources.read(false, true, null, null, path.toAbsolutePath().toString())
+                    .emit(new AbstractRDFHandlerWrapper(RDFHandlers.wrap(model)) {
 
                         @Override
                         public void handleStatement(final Statement stmt)
@@ -857,8 +820,8 @@ public class KE4IR {
             throws IOException {
         try {
             Files.createDirectories(path.getParent());
-            RDFSources.wrap(model).emit(
-                    RDFHandlers.write(null, 1000, path.toAbsolutePath().toString()), 1);
+            RDFSources.wrap(model)
+                    .emit(RDFHandlers.write(null, 1000, path.toAbsolutePath().toString()), 1);
         } catch (final RDFHandlerException ex) {
             throw new IOException(ex);
         }

@@ -1,20 +1,37 @@
 package eu.fbk.ke4ir;
 
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
+import java.util.AbstractMap.SimpleEntry;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 
 import javax.annotation.Nullable;
 
+import com.google.common.base.Joiner;
+import com.google.common.base.Splitter;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
+
+import org.apache.lucene.document.Document;
+import org.apache.lucene.document.Field.Store;
+import org.apache.lucene.document.StoredField;
+import org.apache.lucene.document.TextField;
+import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.util.BytesRef;
 
 public final class TermVector implements Comparable<TermVector> {
 
@@ -59,7 +76,8 @@ public final class TermVector implements Comparable<TermVector> {
         final int start = -Collections.binarySearch(this.terms, Term.create(field, "")) - 1;
         int end = this.terms.size();
         if (start < this.terms.size()) {
-            end = -Collections.binarySearch(this.terms, Term.create(field, HIGHEST_TERM_VALUE)) - 1;
+            end = -Collections.binarySearch(this.terms, Term.create(field, HIGHEST_TERM_VALUE))
+                    - 1;
         }
         return this.terms.subList(start, end);
     }
@@ -222,55 +240,106 @@ public final class TermVector implements Comparable<TermVector> {
         return builder.toString();
     }
 
-    public static void write(final Writer writer, final Map<String, TermVector> vectors)
-            throws IOException {
+    public void write(final Document document) {
 
-        for (final Map.Entry<String, TermVector> entry : vectors.entrySet()) {
-            final String id = entry.getKey();
-            for (final Term term : entry.getValue().terms) {
-                writeEscaped(writer, id);
-                writer.write('\t');
-                writeEscaped(writer, term.getField());
-                writer.write('\t');
-                writeEscaped(writer, term.getValue());
-                writer.write('\t');
-                writeEscaped(writer, Integer.toString(term.getFrequency()));
-                writer.write('\t');
-                writeEscaped(writer, Double.toString(term.getWeight()));
-                writer.write('\n');
+        try {
+            final Set<String> fields = Sets.newHashSet();
+            final ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            final DataOutputStream dos = new DataOutputStream(bos);
+
+            dos.writeUTF(Joiner.on('|').join(Ordering.natural().sortedCopy(getLayers())));
+
+            for (final Term term : this.getTerms()) {
+
+                for (int i = 0; i < term.getFrequency(); ++i) {
+                    document.add(new TextField(term.getField(), term.getValue(), Store.YES));
+                }
+
+                fields.add(term.getField());
+                dos.writeInt(term.getFrequency());
+                dos.writeFloat((float) term.getWeight());
             }
+
+            dos.close();
+
+            document.add(new StoredField("_data", bos.toByteArray()));
+
+        } catch (final IOException ex) {
+            Throwables.propagate(ex);
         }
     }
 
-    @SuppressWarnings({ "rawtypes", "unchecked" })
-    public static Map<String, TermVector> read(final Reader reader) throws IOException {
+    public void write(final Writer writer, final String id) throws IOException {
 
-        final Map<String, Object> map = new HashMap<>();
+        for (final Term term : getTerms()) {
+            writeEscaped(writer, id);
+            writer.write('\t');
+            writeEscaped(writer, term.getField());
+            writer.write('\t');
+            writeEscaped(writer, term.getValue());
+            writer.write('\t');
+            writeEscaped(writer, Integer.toString(term.getFrequency()));
+            writer.write('\t');
+            writeEscaped(writer, Double.toString(term.getWeight()));
+            writer.write('\n');
+        }
+    }
+
+    public static TermVector read(final Document document) {
+
+        try {
+            final List<Term> augmentedTerms = Lists.newArrayList();
+
+            final BytesRef data = document.getBinaryValue("_data");
+            final DataInputStream in = new DataInputStream(
+                    new ByteArrayInputStream(data.bytes, data.offset, data.length));
+
+            final Set<String> fields = ImmutableSet.copyOf(Splitter.on('|').split(in.readUTF()));
+
+            final Set<Term> terms = Sets.newHashSet();
+            for (final IndexableField field : document.getFields()) {
+                if (fields.contains(field.name())) {
+                    terms.add(Term.create(field.name(), field.stringValue()));
+                }
+            }
+
+            for (final Term term : Ordering.natural().sortedCopy(terms)) {
+                final int frequency = in.readInt();
+                final float weight = in.readFloat();
+                augmentedTerms
+                        .add(Term.create(term.getField(), term.getValue(), frequency, weight));
+            }
+
+            return builder().addTerms(augmentedTerms).build();
+
+        } catch (final IOException ex) {
+            throw Throwables.propagate(ex);
+        }
+    }
+
+    @Nullable
+    public static Entry<String, TermVector> read(final BufferedReader reader) throws IOException {
+
+        final Builder builder = builder();
+        String id = null;
 
         final StringBuilder sb = new StringBuilder();
         while (true) {
-            final String id = readEscaped(reader, sb);
-            if (id.isEmpty()) {
+            reader.mark(256);
+            final String newId = readEscaped(reader, sb);
+            if (newId.isEmpty() || id != null && !id.equals(newId)) {
+                reader.reset();
                 break;
             }
+            id = newId;
             final String field = readEscaped(reader, sb);
             final String value = readEscaped(reader, sb);
             final int frequency = Integer.parseInt(readEscaped(reader, sb));
             final double weight = Double.parseDouble(readEscaped(reader, sb));
-            final Term term = Term.create(field, value, frequency, weight);
-            Builder builder = (Builder) map.get(id);
-            if (builder == null) {
-                builder = builder();
-                map.put(id, builder);
-            }
-            builder.addTerm(term);
+            builder.addTerm(field, value, frequency, weight);
         }
 
-        for (final Map.Entry<String, Object> entry : map.entrySet()) {
-            entry.setValue(((Builder) entry.getValue()).build());
-        }
-
-        return (Map) map;
+        return id == null ? null : new SimpleEntry<>(id, builder.build());
     }
 
     private static void writeEscaped(final Writer writer, final String string) throws IOException {
