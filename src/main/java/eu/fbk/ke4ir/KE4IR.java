@@ -604,7 +604,7 @@ public class KE4IR {
 
 
             Path path = this.pathResults.resolve("reranker.txt").toAbsolutePath();
-            Files.createDirectories(path);
+            Files.createDirectories(path.getParent());
             try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(path.toString())))) {
 
                 String header = "# COLUMN EXPLANATION: rel qid ";
@@ -688,7 +688,7 @@ public class KE4IR {
 
             path = this.pathResults
                     .resolve("qrels_trec_style.txt").toAbsolutePath();
-            Files.createDirectories(path);
+            Files.createDirectories(path.getParent());
             try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(path.toString())))) {
 
                 final Stream<Map.Entry<String, Map<String, Double>>> sortedRels = rels.entrySet()
