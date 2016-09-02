@@ -69,7 +69,9 @@ final class Evaluation {
 
     private final int baselineIndex;
 
-    public Evaluation(final IndexSearcher searcher, final Ranker ranker,
+    private final Integer maxDocs;
+
+    public Evaluation(final IndexSearcher searcher, final Integer maxDocs, final Ranker ranker,
             final Iterable<String> layers, final Iterable<String> baselineLayers,
             final Measure sortMeasure, final String statisticalTest) {
 
@@ -98,6 +100,7 @@ final class Evaluation {
         this.statisticalTest = statisticalTest;
         this.settings = settings;
         this.baselineIndex = baselineIndex;
+        this.maxDocs=maxDocs;
     }
 
     public void run(final Map<String, TermVector> queries,
@@ -169,7 +172,7 @@ final class Evaluation {
         final Map<String, TermVector> docVectors = Maps.newConcurrentMap();
         for (final String queryID : Ordering.natural().sortedCopy(queries.keySet())) {
             evaluations.add(new QueryEvaluation(queryID, queries.get(queryID), docIDs, docVectors,
-                    rels.get(queryID), statistics));
+                    rels.get(queryID), statistics, this.maxDocs));
         }
         Environment.run(evaluations);
         return evaluations;
@@ -487,6 +490,8 @@ final class Evaluation {
 
         final Ranker.Statistics statistics;
 
+        final Integer maxDocs;
+
         // Output
 
         final Hit[][] hits; // a Hit[] for each setting
@@ -496,7 +501,7 @@ final class Evaluation {
         QueryEvaluation(final String queryID, final TermVector queryVector,
                 final Map<Integer, String> cachedDocumentIDs,
                 final Map<String, TermVector> cachedDocumentVectors,
-                final Map<String, Double> rels, final Ranker.Statistics statistics) {
+                final Map<String, Double> rels, final Ranker.Statistics statistics, final Integer maxDocs) {
 
             this.queryID = queryID;
             this.queryVector = queryVector;
@@ -506,6 +511,7 @@ final class Evaluation {
             this.rels = rels;
             this.hits = new Hit[Evaluation.this.settings.length][];
             this.scores = new RankingScore[Evaluation.this.settings.length];
+            this.maxDocs = maxDocs;
         }
 
         @Override
@@ -551,7 +557,7 @@ final class Evaluation {
                 // Evaluate the query
                 final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
                 final Query query = parser.parse(queryString);
-                final TopDocs results = Evaluation.this.searcher.search(query, 1000);
+                final TopDocs results = Evaluation.this.searcher.search(query, this.maxDocs);
                 LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length,
                         queryString);
 

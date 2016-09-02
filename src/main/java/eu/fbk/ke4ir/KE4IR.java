@@ -455,7 +455,7 @@ public class KE4IR {
         try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex))) {
             final IndexSearcher searcher = new IndexSearcher(reader);
             searcher.setSimilarity(FakeSimilarity.INSTANCE);
-            new Evaluation(searcher, this.ranker, this.layers, this.evalBaseline,
+            new Evaluation(searcher, this.maxDocs, this.ranker, this.layers, this.evalBaseline,
                     this.evalSortMeasure, this.evalStatisticalTest).run(queries, rels,
                             this.pathResults);
         }
@@ -602,8 +602,10 @@ public class KE4IR {
                 rankmap.put(qid, q_map);
             }
 
-            try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(
-                    this.pathResults.resolve("reranker.txt").toAbsolutePath().toString())))) {
+
+            Path path = this.pathResults.resolve("reranker.txt").toAbsolutePath();
+            Files.createDirectories(path);
+            try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(path.toString())))) {
 
                 String header = "# COLUMN EXPLANATION: rel qid ";
                 for (int i = 0; i < features.size(); i++) {
@@ -684,8 +686,10 @@ public class KE4IR {
 
             }
 
-            try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(this.pathResults
-                    .resolve("qrels_trec_style.txt").toAbsolutePath().toString())))) {
+            path = this.pathResults
+                    .resolve("qrels_trec_style.txt").toAbsolutePath();
+            Files.createDirectories(path);
+            try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(path.toString())))) {
 
                 final Stream<Map.Entry<String, Map<String, Double>>> sortedRels = rels.entrySet()
                         .stream();
