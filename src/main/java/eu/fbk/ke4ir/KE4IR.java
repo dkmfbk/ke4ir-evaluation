@@ -84,6 +84,8 @@ public class KE4IR {
     private static final Pattern RDF_PATTERN = Pattern.compile(
             "\\.(rdf|rj|jsonld|nt|nq|trix|trig|tql|ttl|n3|brf)" + "(\\.(gz|bz2|xz|7z))?$");
 
+    private final Integer maxDocs; //default set to 1000
+
     private final Path pathDocsNAF;
 
     private final Path pathDocsRDF;
@@ -142,11 +144,14 @@ public class KE4IR {
                     .withHeader("supports all the operations involved in the evaluation of " //
                             + "semantic information retrieval: enrichment, analysis, " //
                             + "indexing, search")
+                    .withOption("n", "maxDocs", "specifies the maximum number of relevant documents to return for each query (default = 1000)",
+                            "INTEGER", CommandLine.Type.INTEGER, true, false, false)
                     .parse(args);
 
             // Extract options
             final Path propertiesPath = Paths.get(cmd.getOptionValue("p", String.class,
                     System.getProperty("user.dir") + "/ke4ir.properties"));
+            Integer maxDocs = cmd.getOptionValue("n", Integer.class,1000);
             boolean enrichDocs = cmd.hasOption("enrich-docs") || cmd.hasOption("e");
             boolean enrichQueries = cmd.hasOption("enrich-queries") || cmd.hasOption("e");
             boolean analyzeDocs = cmd.hasOption("analyze-docs") || cmd.hasOption("a");
@@ -190,7 +195,7 @@ public class KE4IR {
             //                properties.setProperty("ke4ir.ranker.tfidf.weights", ws);
 
             // Initialize the KE4IR main object
-            final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.");
+            final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.", maxDocs);
             LOGGER.info("Initialized in {} ms", System.currentTimeMillis() - ts);
 
             // Perform the requested operations
@@ -231,10 +236,12 @@ public class KE4IR {
         }
     }
 
-    public KE4IR(final Path root, final Properties properties, final String prefix) {
+    public KE4IR(final Path root, final Properties properties, final String prefix, final Integer maxDocs) {
 
         // Normalize prefix, ensuring it ends with '.'
         final String pr = prefix.endsWith(".") ? prefix : prefix + ".";
+
+        this.maxDocs = maxDocs;
 
         // Retrieve document paths
         this.pathDocsNAF = root.resolve(properties.getProperty(pr + "docs.naf", "docs/naf"));
@@ -501,7 +508,7 @@ public class KE4IR {
                 final String qid = queryEntry.getKey();
                 final TermVector qv = queryEntry.getValue();
 
-                final List<Entry<String, TermVector>> docs = matchDocuments(searcher, qv);
+                final List<Entry<String, TermVector>> docs = matchDocuments(searcher, qv, this.maxDocs);
                 //    for (String ID:rels.get(qid).keySet()){
                 //        if (!docs.contains(ID)) docs.add(ID);
                 //    }
@@ -714,7 +721,7 @@ public class KE4IR {
     }
 
     private static List<Entry<String, TermVector>> matchDocuments(final IndexSearcher searcher,
-            final TermVector queryVector) throws IOException, ParseException {
+            final TermVector queryVector, final Integer maxDocs) throws IOException, ParseException {
 
         // Compose the query string
         final StringBuilder builder = new StringBuilder();
@@ -729,7 +736,7 @@ public class KE4IR {
         // Evaluate the query
         final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
         final Query query = parser.parse(queryString);
-        final TopDocs results = searcher.search(query, 1000);
+        final TopDocs results = searcher.search(query, maxDocs);
         LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length, queryString);
 
         // Populate the matches multimap. This requires mapping the numerical doc ID to
