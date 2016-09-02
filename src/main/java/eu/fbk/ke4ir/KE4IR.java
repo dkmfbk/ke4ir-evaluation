@@ -144,14 +144,14 @@ public class KE4IR {
                     .withHeader("supports all the operations involved in the evaluation of " //
                             + "semantic information retrieval: enrichment, analysis, " //
                             + "indexing, search")
-                    .withOption("n", "maxDocs", "specifies the maximum number of relevant documents to return for each query (default = 1000)",
-                            "INTEGER", CommandLine.Type.INTEGER, true, false, false)
+//                    .withOption("n", "maxDocs", "specifies the maximum number of relevant documents to return for each query (default = 1000)",
+//                            "INTEGER", CommandLine.Type.INTEGER, true, false, false)
                     .parse(args);
 
             // Extract options
             final Path propertiesPath = Paths.get(cmd.getOptionValue("p", String.class,
                     System.getProperty("user.dir") + "/ke4ir.properties"));
-            Integer maxDocs = cmd.getOptionValue("n", Integer.class,1000);
+//            Integer maxDocs = cmd.getOptionValue("n", Integer.class,1000);
             boolean enrichDocs = cmd.hasOption("enrich-docs") || cmd.hasOption("e");
             boolean enrichQueries = cmd.hasOption("enrich-queries") || cmd.hasOption("e");
             boolean analyzeDocs = cmd.hasOption("analyze-docs") || cmd.hasOption("a");
@@ -195,7 +195,7 @@ public class KE4IR {
             //                properties.setProperty("ke4ir.ranker.tfidf.weights", ws);
 
             // Initialize the KE4IR main object
-            final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.", maxDocs);
+            final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.");
             LOGGER.info("Initialized in {} ms", System.currentTimeMillis() - ts);
 
             // Perform the requested operations
@@ -236,12 +236,12 @@ public class KE4IR {
         }
     }
 
-    public KE4IR(final Path root, final Properties properties, final String prefix, final Integer maxDocs) {
+    public KE4IR(final Path root, final Properties properties, final String prefix) {
 
         // Normalize prefix, ensuring it ends with '.'
         final String pr = prefix.endsWith(".") ? prefix : prefix + ".";
 
-        this.maxDocs = maxDocs;
+        this.maxDocs = Integer.valueOf(properties.getProperty(pr + "maxDocs", "1000"));
 
         // Retrieve document paths
         this.pathDocsNAF = root.resolve(properties.getProperty(pr + "docs.naf", "docs/naf"));
