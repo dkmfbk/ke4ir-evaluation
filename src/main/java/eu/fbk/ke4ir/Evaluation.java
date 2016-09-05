@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.collect.MapMaker;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Ordering;
@@ -26,7 +27,6 @@ import com.google.common.primitives.Doubles;
 import org.apache.commons.math3.stat.inference.TTest;
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
 import org.apache.lucene.document.Document;
-import org.apache.lucene.index.IndexableField;
 import org.apache.lucene.index.TermContext;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
@@ -100,7 +100,7 @@ final class Evaluation {
         this.statisticalTest = statisticalTest;
         this.settings = settings;
         this.baselineIndex = baselineIndex;
-        this.maxDocs=maxDocs;
+        this.maxDocs = maxDocs;
     }
 
     public void run(final Map<String, TermVector> queries,
@@ -168,8 +168,9 @@ final class Evaluation {
             throws IOException {
 
         final List<QueryEvaluation> evaluations = Lists.newArrayList();
-        final Map<Integer, String> docIDs = Maps.newConcurrentMap();
-        final Map<String, TermVector> docVectors = Maps.newConcurrentMap();
+
+        final Map<String, String> docIDs = new MapMaker().weakKeys().makeMap();
+        final Map<String, TermVector> docVectors = new MapMaker().weakKeys().makeMap();
         for (final String queryID : Ordering.natural().sortedCopy(queries.keySet())) {
             evaluations.add(new QueryEvaluation(queryID, queries.get(queryID), docIDs, docVectors,
                     rels.get(queryID), statistics, this.maxDocs));
@@ -482,7 +483,7 @@ final class Evaluation {
 
         final TermVector queryVector;
 
-        final Map<Integer, String> cachedDocumentIDs;
+        final Map<String, String> cachedDocumentIDs;
 
         final Map<String, TermVector> cachedDocumentVectors;
 
@@ -499,9 +500,10 @@ final class Evaluation {
         final RankingScore[] scores; // a RankingScore for each setting
 
         QueryEvaluation(final String queryID, final TermVector queryVector,
-                final Map<Integer, String> cachedDocumentIDs,
+                final Map<String, String> cachedDocumentIDs,
                 final Map<String, TermVector> cachedDocumentVectors,
-                final Map<String, Double> rels, final Ranker.Statistics statistics, final Integer maxDocs) {
+                final Map<String, Double> rels, final Ranker.Statistics statistics,
+                final Integer maxDocs) {
 
             this.queryID = queryID;
             this.queryVector = queryVector;
@@ -519,10 +521,12 @@ final class Evaluation {
 
             try {
                 // Identify matching documents using boolean model (delegated to Lucene, OR semantics)
-                final Multimap<String, String> matches = matchDocuments();
+                final Multimap<String, String> matches = HashMultimap.create();
+                final Map<String, TermVector> docVectors = Maps.newHashMap();
+                matchDocuments(matches, docVectors);
 
                 // Compute and evaluate rankings for each setting
-                rankDocuments(matches);
+                rankDocuments(matches, docVectors);
 
                 // Log number of hits and best ranking, if enabled
                 logCompletion();
@@ -533,10 +537,10 @@ final class Evaluation {
             }
         }
 
-        private Multimap<String, String> matchDocuments() throws IOException, ParseException {
+        private void matchDocuments(final Multimap<String, String> matches,
+                final Map<String, TermVector> vectors) throws IOException, ParseException {
 
             // Evaluate a Lucene query for each layer and populate a multimap with matched document IDs
-            final Multimap<String, String> matches = HashMultimap.create();
             for (final String layer : Evaluation.this.layers) {
 
                 // Compose the query string
@@ -565,27 +569,25 @@ final class Evaluation {
                 // the corresponding String one. We also retrieve the associated Lucene document
                 // and cache the document term vector for later reuse.
                 for (final ScoreDoc scoreDoc : results.scoreDocs) {
-                    String docID;
-                    synchronized (this.cachedDocumentIDs) {
-                        docID = this.cachedDocumentIDs.get(scoreDoc.doc);
-                        if (docID == null) {
-                            final Document doc = Evaluation.this.searcher.doc(scoreDoc.doc);
-                            docID = doc.get("id");
-                            final TermVector docVector = TermVector.read(doc);
-                            // final Document doc = Evaluation.this.searcher.doc(scoreDoc.doc);
-                            // docID = doc.get("id");
-                            // final TermVector docVector = toTermVector(doc);
-                            this.cachedDocumentIDs.put(scoreDoc.doc, docID);
-                            this.cachedDocumentVectors.put(docID, docVector);
-                        }
+                    final String docKey = Integer.toString(scoreDoc.doc).intern();
+                    String docID = this.cachedDocumentIDs.get(docKey);
+                    TermVector docVector = docID == null ? null
+                            : this.cachedDocumentVectors.get(docID);
+                    if (docVector == null) {
+                        final Document doc = Evaluation.this.searcher.doc(scoreDoc.doc);
+                        docID = doc.get("id").intern();
+                        docVector = TermVector.read(doc);
+                        this.cachedDocumentIDs.put(docKey, docID);
+                        this.cachedDocumentVectors.put(docID, docVector);
                     }
                     matches.put(layer, docID);
+                    vectors.put(docID, docVector);
                 }
             }
-            return matches;
         }
 
-        private void rankDocuments(final Multimap<String, String> matches) {
+        private void rankDocuments(final Multimap<String, String> matches,
+                final Map<String, TermVector> docVectors) {
 
             // Compute and evaluate a ranking for each considered setting
             for (int i = 0; i < Evaluation.this.settings.length; ++i) {
@@ -610,7 +612,7 @@ final class Evaluation {
                     final String[] ids = documentIDs.toArray(new String[documentIDs.size()]);
                     final TermVector[] vectors = new TermVector[ids.length];
                     for (int j = 0; j < ids.length; ++j) {
-                        vectors[j] = this.cachedDocumentVectors.get(ids[j]);
+                        vectors[j] = docVectors.get(ids[j]);
                     }
                     final float[] scores = Evaluation.this.ranker.rank(
                             this.queryVector.project(Arrays.asList(setting)), vectors,
