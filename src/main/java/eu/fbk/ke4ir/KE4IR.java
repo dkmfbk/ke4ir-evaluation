@@ -108,6 +108,8 @@ public class KE4IR {
 
     private final Path pathResults;
 
+    private final Path pathReranker;
+
     private final List<String> layers;
 
     private final Set<String> evalBaseline;
@@ -288,6 +290,9 @@ public class KE4IR {
 
         // Build the ranker
         this.ranker = Ranker.create(root, properties, "ke4ir.ranker.");
+
+        // Retrieve results path
+        this.pathReranker = root.resolve(properties.getProperty(pr + "reranker", "reranker"));
 
         // Report configuration
         LOGGER.info("Using enricher: {}", this.enricher);
@@ -603,7 +608,7 @@ public class KE4IR {
             }
 
 
-            Path path = this.pathResults.resolve("reranker.txt").toAbsolutePath();
+            Path path = this.pathReranker.resolve("reranker.txt").toAbsolutePath();
             Files.createDirectories(path.getParent());
             try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(path.toString())))) {
 
@@ -686,8 +691,7 @@ public class KE4IR {
 
             }
 
-            path = this.pathResults
-                    .resolve("qrels_trec_style.txt").toAbsolutePath();
+            path = this.pathReranker.resolve("qrels_trec_style.txt").toAbsolutePath();
             Files.createDirectories(path.getParent());
             try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(path.toString())))) {
 
