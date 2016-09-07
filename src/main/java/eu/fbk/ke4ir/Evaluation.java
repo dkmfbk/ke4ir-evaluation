@@ -12,12 +12,13 @@ import java.util.Set;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Throwables;
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import com.google.common.collect.MapMaker;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Ordering;
@@ -169,8 +170,9 @@ final class Evaluation {
 
         final List<QueryEvaluation> evaluations = Lists.newArrayList();
 
-        final Map<String, String> docIDs = new MapMaker().weakKeys().makeMap();
-        final Map<String, TermVector> docVectors = new MapMaker().weakKeys().makeMap();
+        final Cache<Integer, String> docIDs = CacheBuilder.newBuilder().softValues().build();
+        final Cache<String, TermVector> docVectors = CacheBuilder.newBuilder().softValues()
+                .build();
         for (final String queryID : Ordering.natural().sortedCopy(queries.keySet())) {
             evaluations.add(new QueryEvaluation(queryID, queries.get(queryID), docIDs, docVectors,
                     rels.get(queryID), statistics, this.maxDocs));
@@ -483,9 +485,9 @@ final class Evaluation {
 
         final TermVector queryVector;
 
-        final Map<String, String> cachedDocumentIDs;
+        final Cache<Integer, String> cachedDocumentIDs;
 
-        final Map<String, TermVector> cachedDocumentVectors;
+        final Cache<String, TermVector> cachedDocumentVectors;
 
         final Map<String, Double> rels;
 
@@ -500,8 +502,8 @@ final class Evaluation {
         final RankingScore[] scores; // a RankingScore for each setting
 
         QueryEvaluation(final String queryID, final TermVector queryVector,
-                final Map<String, String> cachedDocumentIDs,
-                final Map<String, TermVector> cachedDocumentVectors,
+                final Cache<Integer, String> cachedDocumentIDs,
+                final Cache<String, TermVector> cachedDocumentVectors,
                 final Map<String, Double> rels, final Ranker.Statistics statistics,
                 final Integer maxDocs) {
 
@@ -569,15 +571,14 @@ final class Evaluation {
                 // the corresponding String one. We also retrieve the associated Lucene document
                 // and cache the document term vector for later reuse.
                 for (final ScoreDoc scoreDoc : results.scoreDocs) {
-                    final String docKey = Integer.toString(scoreDoc.doc).intern();
-                    String docID = this.cachedDocumentIDs.get(docKey);
+                    String docID = this.cachedDocumentIDs.getIfPresent(scoreDoc.doc);
                     TermVector docVector = docID == null ? null
-                            : this.cachedDocumentVectors.get(docID);
+                            : this.cachedDocumentVectors.getIfPresent(docID);
                     if (docVector == null) {
                         final Document doc = Evaluation.this.searcher.doc(scoreDoc.doc);
                         docID = doc.get("id").intern();
                         docVector = TermVector.read(doc);
-                        this.cachedDocumentIDs.put(docKey, docID);
+                        this.cachedDocumentIDs.put(scoreDoc.doc, docID);
                         this.cachedDocumentVectors.put(docID, docVector);
                     }
                     matches.put(layer, docID);
