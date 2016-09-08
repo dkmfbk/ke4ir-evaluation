@@ -625,12 +625,15 @@ final class Evaluation {
                             hitList.add(new Hit(ids[j], scores[j]));
                         }
                     }
+
                     final Hit[] hits = hitList.toArray(new Hit[hitList.size()]);
                     Arrays.sort(hits);
+                    //cut hits a n
+                    //int truncate= Integer.min(hits.length,this.maxDocsEval);
                     this.hits[i] = hits;
 
                     // Update ranking scores based on the obtained Hit list
-                    final String[] idsSorted = new String[ids.length];
+                    final String[] idsSorted = new String[hits.length];
                     final Map<String, Double> scoresMap = Maps.newHashMap();
                     for (int j = 0; j < hits.length; ++j) {
                         idsSorted[j] = hits[j].documentID;
