@@ -13,13 +13,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.*;
 import java.util.AbstractMap.SimpleEntry;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Properties;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
@@ -85,6 +81,9 @@ public class KE4IR {
             "\\.(rdf|rj|jsonld|nt|nq|trix|trig|tql|ttl|n3|brf)" + "(\\.(gz|bz2|xz|7z))?$");
 
     private final Integer maxDocs; //default set to 1000
+    private final Integer maxDocsRank;//default set to 1000
+
+    private final boolean normalize;//default set to 1000
 
     private final Path pathDocsNAF;
 
@@ -244,6 +243,10 @@ public class KE4IR {
         final String pr = prefix.endsWith(".") ? prefix : prefix + ".";
 
         this.maxDocs = Integer.valueOf(properties.getProperty(pr + "maxDocs", "1000"));
+        this.maxDocsRank = Integer.valueOf(properties.getProperty(pr + "maxDocsRank", "1000"));
+
+        this.normalize = Boolean.valueOf(properties.getProperty(pr + "normalize", "false"));
+        //System.out.println("MAXDOCS: "+this.maxDocsRank);
 
         // Retrieve document paths
         this.pathDocsNAF = root.resolve(properties.getProperty(pr + "docs.naf", "docs/naf"));
@@ -460,7 +463,7 @@ public class KE4IR {
         try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex))) {
             final IndexSearcher searcher = new IndexSearcher(reader);
             searcher.setSimilarity(FakeSimilarity.INSTANCE);
-            new Evaluation(searcher, this.maxDocs, this.ranker, this.layers, this.evalBaseline,
+            new Evaluation(searcher, this.maxDocs, this.maxDocsRank, this.normalize, this.ranker, this.layers, this.evalBaseline,
                     this.evalSortMeasure, this.evalStatisticalTest).run(queries, rels,
                             this.pathResults);
         }
@@ -628,6 +631,11 @@ public class KE4IR {
 
                     final String qid = q.getKey();
                     //System.out.println(qid);
+
+                    //Comparator<Entry<Integer, String>> com2 =
+                    //Comparator.comparing(Map.Entry<Integer,String>::getValue).reversed();
+
+
                     final Stream<Map.Entry<String, Map<String, Map<String, Double>>>> sortedDoc = q
                             .getValue().entrySet().stream();
                     sortedDoc.sorted(Map.Entry.comparingByKey()).forEachOrdered(d -> {

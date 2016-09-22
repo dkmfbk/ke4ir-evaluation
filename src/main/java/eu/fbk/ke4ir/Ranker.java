@@ -1,9 +1,8 @@
 package eu.fbk.ke4ir;
 
+import java.io.IOException;
 import java.nio.file.Path;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
+import java.util.*;
 
 import javax.annotation.Nullable;
 
@@ -11,7 +10,9 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 
+import org.apache.lucene.index.TermContext;
 import org.apache.lucene.search.CollectionStatistics;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.TermStatistics;
 
 /**
@@ -37,7 +38,7 @@ public abstract class Ranker {
      * @return a score array, where i-th element corresponds to i-th document
      */
     public abstract float[] rank(TermVector queryVector, TermVector[] docVectors,
-            Statistics statistics);
+            Statistics statistics, Boolean normalize);
 
     /**
      * {@inheritDoc} Emits a descriptive string describe the Ranker and its configuration. This
@@ -80,7 +81,7 @@ public abstract class Ranker {
      * paths contained in the examined properties. The properties currently supported are:
      * <ul>
      * <li>{@code type} - the type of {@code Ranker} to instantiate; currently only {@code tfidf}
-     * is supported (corresponding to {@link #createTfIdfRanker(String, float)});</li>
+     * is supported (corresponding to {@link createTfIdfRanker(String, float)});</li>
      * <li>{@code tfidf.semanticweight} - the total weight assigned to semantic layers in the
      * TF/IDF {@code Ranker};</li>
      * <li>{@code tfidf.textuallayer} - the name of the textual layer, used by the TF/IDF
@@ -136,7 +137,7 @@ public abstract class Ranker {
 
         @Override
         public float[] rank(final TermVector queryVector, final TermVector[] docVectors,
-                final Statistics stats) {
+                final Statistics stats, final Boolean normalize) {
 
             // Apply weight rescaling, if configured to do so
             Map<String, Float> weights = this.layerWeights;
@@ -158,10 +159,27 @@ public abstract class Ranker {
             }
 
             // Retrieve the number of documents from Lucene statistics
-            final long numDocs = stats.getNumDocuments();
+                final long numDocs = stats.getNumDocuments();
 
             // Allocate the array of document scores, one element for each document vector
             final float[] scores = new float[docVectors.length];
+
+            final float[] norm  = new float[docVectors.length];
+
+            if (normalize) {
+                for (int i = 0; i < docVectors.length; ++i) {
+
+                    norm[i] = 0.0f;
+
+                    for (final Term docTerm : docVectors[i].getTerms()) {
+                        final double rfd = docTerm.getFrequency(); // raw frequency, document side
+                        final float tfd = (float) (1.0 + Math.log(rfd)); // TF, document side
+                        final float idf = (float) Math.log(numDocs / (double) stats.getNumDocuments(docTerm)); // IDF
+                        norm[i] += tfd * tfd * idf * idf;
+                    }
+                    norm[i] = (float) Math.sqrt((float) norm[i]);
+                }
+            }
 
             // We compute the score of each document by iterating first on query terms (so that
             // some state can be saved and reused) and then on document vectors. The relative
@@ -195,8 +213,12 @@ public abstract class Ranker {
                     final float idf = (float) Math.log(numDocs / (double) docFreq); // IDF
 
                     // Update the document score
-                    scores[i] += tfd * idf * idf * tfq * weight;
+                    if (normalize) scores[i] += (tfd * idf * idf * tfq * weight) / norm[i];
+                    else scores[i] += (tfd * idf * idf * tfq * weight);
                 }
+
+
+
             }
 
             // Return the computed scores
@@ -213,10 +235,14 @@ public abstract class Ranker {
 
         private final Map<Term, TermStatistics> termStats;
 
+        private final IndexSearcher searcher;
+
         Statistics(final Map<String, CollectionStatistics> layerStats,
-                final Map<Term, TermStatistics> termStats) {
+                final Map<Term, TermStatistics> termStats, IndexSearcher searcher) {
             this.layerStats = ImmutableMap.copyOf(layerStats);
-            this.termStats = ImmutableMap.copyOf(termStats);
+            //this.termStats = ImmutableMap.copyOf(termStats);
+            this.termStats = termStats;
+            this.searcher = searcher;
         }
 
         /**
@@ -257,8 +283,31 @@ public abstract class Ranker {
          *            the term
          * @return the number of documents with that term
          */
-        public long getNumDocuments(final Term term) {
-            return this.termStats.get(term).docFreq();
+        public synchronized long getNumDocuments(final Term term) {
+
+            TermStatistics t = this.termStats.get(term);
+            if (t==null) {
+
+                final String layer = term.getField();
+                final String value = term.getValue();
+                final org.apache.lucene.index.Term luceneTerm;
+                luceneTerm = new org.apache.lucene.index.Term(layer, value);
+
+                try {
+                    t= this.searcher.termStatistics(luceneTerm, //
+                            TermContext.build(this.searcher.getTopReaderContext(), luceneTerm));
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+
+                termStats.put(term, t);
+
+
+            }
+            return t.docFreq();
+
+
+
         }
 
         /**

@@ -72,7 +72,11 @@ final class Evaluation {
 
     private final Integer maxDocs;
 
-    public Evaluation(final IndexSearcher searcher, final Integer maxDocs, final Ranker ranker,
+    private final Integer maxDocsRank;
+
+    private final Boolean normalize;
+
+    public Evaluation(final IndexSearcher searcher, final Integer maxDocs, final Integer maxDocsRank, final Boolean normalize, final Ranker ranker,
             final Iterable<String> layers, final Iterable<String> baselineLayers,
             final Measure sortMeasure, final String statisticalTest) {
 
@@ -102,6 +106,8 @@ final class Evaluation {
         this.settings = settings;
         this.baselineIndex = baselineIndex;
         this.maxDocs = maxDocs;
+        this.maxDocsRank = maxDocsRank;
+        this.normalize = normalize;
     }
 
     public void run(final Map<String, TermVector> queries,
@@ -143,6 +149,7 @@ final class Evaluation {
         final Map<String, CollectionStatistics> layerStats = Maps.newHashMap();
         for (final String layer : this.layers) {
             layerStats.put(layer, this.searcher.collectionStatistics(layer));
+
         }
 
         // Retrieve statistics for all the terms appearing in queries
@@ -154,6 +161,7 @@ final class Evaluation {
                     final String value = term.getValue();
                     final org.apache.lucene.index.Term luceneTerm;
                     luceneTerm = new org.apache.lucene.index.Term(layer, value);
+
                     termStats.put(term, this.searcher.termStatistics(luceneTerm, //
                             TermContext.build(this.searcher.getTopReaderContext(), luceneTerm)));
                 }
@@ -161,7 +169,7 @@ final class Evaluation {
         }
 
         // Build and return the Stats that will be supplied to the Ranker
-        return new Ranker.Statistics(layerStats, termStats);
+        return new Ranker.Statistics(layerStats, termStats, searcher);
     }
 
     private List<QueryEvaluation> evaluateQueries(final Map<String, TermVector> queries,
@@ -175,7 +183,7 @@ final class Evaluation {
                 .build();
         for (final String queryID : Ordering.natural().sortedCopy(queries.keySet())) {
             evaluations.add(new QueryEvaluation(queryID, queries.get(queryID), docIDs, docVectors,
-                    rels.get(queryID), statistics, this.maxDocs));
+                    rels.get(queryID), statistics, this.maxDocs, this.maxDocsRank, this.normalize));
         }
         Environment.run(evaluations);
         return evaluations;
@@ -494,6 +502,9 @@ final class Evaluation {
         final Ranker.Statistics statistics;
 
         final Integer maxDocs;
+        final Integer maxDocsRank;
+
+        final Boolean normalize;
 
         // Output
 
@@ -505,7 +516,8 @@ final class Evaluation {
                 final Cache<Integer, String> cachedDocumentIDs,
                 final Cache<String, TermVector> cachedDocumentVectors,
                 final Map<String, Double> rels, final Ranker.Statistics statistics,
-                final Integer maxDocs) {
+                final Integer maxDocs,
+                        final Integer maxDocsRank, final Boolean normalize) {
 
             this.queryID = queryID;
             this.queryVector = queryVector;
@@ -516,6 +528,10 @@ final class Evaluation {
             this.hits = new Hit[Evaluation.this.settings.length][];
             this.scores = new RankingScore[Evaluation.this.settings.length];
             this.maxDocs = maxDocs;
+            this.maxDocsRank = maxDocsRank;
+            this.normalize = normalize;
+
+
         }
 
         @Override
@@ -617,7 +633,7 @@ final class Evaluation {
                     }
                     final float[] scores = Evaluation.this.ranker.rank(
                             this.queryVector.project(Arrays.asList(setting)), vectors,
-                            this.statistics);
+                            this.statistics, this.normalize);
 
                     // Build and store a sorted list of Hit objects, removing documents scored 0
                     final List<Hit> hitList = Lists.newArrayList();
@@ -630,13 +646,14 @@ final class Evaluation {
                     final Hit[] hits = hitList.toArray(new Hit[hitList.size()]);
                     Arrays.sort(hits);
                     //cut hits a n
-                    //int truncate= Integer.min(hits.length,this.maxDocsEval);
+                    int truncate= Integer.min(hits.length,this.maxDocsRank);
+                    //System.out.println("TRUNCATE: "+truncate);
                     this.hits[i] = hits;
 
                     // Update ranking scores based on the obtained Hit list
-                    final String[] idsSorted = new String[hits.length];
+                    final String[] idsSorted = new String[truncate];
                     final Map<String, Double> scoresMap = Maps.newHashMap();
-                    for (int j = 0; j < hits.length; ++j) {
+                    for (int j = 0; j < truncate; ++j) {
                         idsSorted[j] = hits[j].documentID;
                         scoresMap.put(hits[j].documentID, (double) hits[j].score);
                     }
