@@ -81,7 +81,7 @@ public abstract class Ranker {
      * paths contained in the examined properties. The properties currently supported are:
      * <ul>
      * <li>{@code type} - the type of {@code Ranker} to instantiate; currently only {@code tfidf}
-     * is supported (corresponding to {@link createTfIdfRanker(String, float)});</li>
+     * is supported (corresponding to {@link #createTfIdfRanker(Map, Iterable)});</li>
      * <li>{@code tfidf.semanticweight} - the total weight assigned to semantic layers in the
      * TF/IDF {@code Ranker};</li>
      * <li>{@code tfidf.textuallayer} - the name of the textual layer, used by the TF/IDF
@@ -171,11 +171,13 @@ public abstract class Ranker {
 
                     norm[i] = 0.0f;
 
-                    for (final Term docTerm : docVectors[i].getTerms()) {
-                        final double rfd = docTerm.getFrequency(); // raw frequency, document side
-                        final float tfd = (float) (1.0 + Math.log(rfd)); // TF, document side
-                        final float idf = (float) Math.log(numDocs / (double) stats.getNumDocuments(docTerm)); // IDF
-                        norm[i] += tfd * tfd * idf * idf;
+                    for (final Term docTerm : docVectors[i].getTerms("textual")) {
+                        //if (!docTerm.getField().equals("textual")) continue;
+                        //final double rfd = docTerm.getFrequency(); // raw frequency, document side
+                        //final float tfd = (float) (1.0 + Math.log(rfd)); // TF, document side
+                        //final float idf = (float) Math.log(numDocs / (double) stats.getNumDocuments(docTerm)); // IDF
+                        //norm[i] += tfd * tfd * idf * idf;
+                        norm[i] += 1;
                     }
                     norm[i] = (float) Math.sqrt((float) norm[i]);
                 }
