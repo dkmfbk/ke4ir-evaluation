@@ -60,10 +60,12 @@ public abstract class Analyzer {
      * @param fromSentence
      *            the (1-based) index of the first sentence to process, included
      * @param toSentence
-     *            the (1-based) index up to which input text should be processed, excluded
+     *            the (1-based) index of the last sentence to process, included
+     * @param layerPrefix
+     *            the prefix to add to the layer of generated terms, not null
      */
     public abstract void analyze(KAFDocument document, QuadModel model, TermVector.Builder builder,
-            int fromSentence, int toSentence);
+            int fromSentence, int toSentence, String layerPrefix);
 
     /**
      * {@inheritDoc} Emits a descriptive string describe the Analyzer and its configuration. This
@@ -246,9 +248,10 @@ public abstract class Analyzer {
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final int fromSentence, final int toSentence) {
+                final Builder builder, final int fromSentence, final int toSentence,
+                final String layerPrefix) {
             for (final Analyzer analyzer : this.analyzers) {
-                analyzer.analyze(document, model, builder, fromSentence, toSentence);
+                analyzer.analyze(document, model, builder, fromSentence, toSentence, layerPrefix);
             }
         }
 
@@ -265,7 +268,8 @@ public abstract class Analyzer {
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final int fromSentence, final int toSentence) {
+                final Builder builder, final int fromSentence, final int toSentence,
+                final String layerPrefix) {
         }
 
     }
@@ -331,11 +335,16 @@ public abstract class Analyzer {
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final int fromSentence, final int toSentence) {
+                final Builder builder, final int fromSentence, final int toSentence,
+                final String layerPrefix) {
 
             // Iterate over all the tokens in the document
-            for (int sentence = fromSentence; sentence < toSentence; ++sentence) {
-                for (final ixa.kaflib.Term term : document.getTermsBySent(sentence)) {
+            for (int sentence = fromSentence; sentence <= toSentence; ++sentence) {
+                final List<ixa.kaflib.Term> terms = document.getTermsBySent(sentence);
+                if (terms == null || terms.isEmpty()) {
+                    break;
+                }
+                for (final ixa.kaflib.Term term : terms) {
                     final String wf = term.getStr().trim();
                     for (final String subWord : extract(wf)) {
                         if (isValidTerm(subWord)) {
@@ -344,7 +353,7 @@ public abstract class Analyzer {
                                 stemmer.setCurrent(subWord.toLowerCase());
                                 stemmer.stem();
                                 final String subWordStem = stemmer.getCurrent();
-                                builder.addTerm("textual", subWordStem);
+                                builder.addTerm(layerPrefix + "textual", subWordStem);
                             } catch (final InstantiationException | IllegalAccessException ex) {
                                 Throwables.propagate(ex);
                             }
@@ -473,11 +482,12 @@ public abstract class Analyzer {
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder, final int fromSentence, final int toSentence) {
+                final Builder builder, final int fromSentence, final int toSentence,
+                final String layerPrefix) {
 
             // Retrieve start and end offsets identifying the fragment of text to analyze
-            final int fromOffset = extractSentenceOffset(document, fromSentence);
-            final int toOffset = extractSentenceOffset(document, toSentence);
+            final int fromOffset = extractSentenceFromOffset(document, fromSentence);
+            final int toOffset = extractSentenceToOffset(document, toSentence);
 
             // Extract entities and mentions, plus the mapping mention -> denoted entities
             final Set<Resource> entities = Sets.newHashSet();
@@ -545,10 +555,10 @@ public abstract class Analyzer {
                 }
 
                 // Emit terms for each layer (for each term: frequency=1, weight=1/#terms in layer)
-                emitTerms(builder, "uri", uris);
-                emitTerms(builder, "type", types);
-                emitTerms(builder, "frame", frames);
-                emitTerms(builder, "time", times);
+                emitTerms(builder, "uri", uris, layerPrefix);
+                emitTerms(builder, "type", types, layerPrefix);
+                emitTerms(builder, "frame", frames, layerPrefix);
+                emitTerms(builder, "time", times, layerPrefix);
             }
         }
 
@@ -564,10 +574,10 @@ public abstract class Analyzer {
         }
 
         private static void emitTerms(final TermVector.Builder sink, final String termLayer,
-                final Collection<String> termValues) {
+                final Collection<String> termValues, final String layerPrefix) {
             final double weight = 1.0 / termValues.size();
             for (final String termValue : termValues) {
-                sink.addTerm(termLayer, termValue, 1, weight);
+                sink.addTerm(layerPrefix + termLayer, termValue, 1, weight);
             }
         }
 
@@ -654,21 +664,23 @@ public abstract class Analyzer {
             }
         }
 
-        private static int extractSentenceOffset(final KAFDocument document, final int sentence) {
-
-            // If the sentence exists, return the offset of its first term
-            List<ixa.kaflib.Term> terms = document.getTermsBySent(sentence);
-            if (terms != null && !terms.isEmpty()) {
-                int offset = Integer.MAX_VALUE;
-                for (final ixa.kaflib.Term term : terms) {
-                    offset = Math.min(offset, term.getOffset());
-                }
-                return offset;
+        private static int extractSentenceFromOffset(final KAFDocument document,
+                final int sentence) {
+            final List<ixa.kaflib.Term> terms = document.getTermsBySent(sentence);
+            if (terms == null || terms.isEmpty()) {
+                return extractSentenceToOffset(document, document.getNumSentences());
             }
+            int offset = Integer.MAX_VALUE;
+            for (final ixa.kaflib.Term term : terms) {
+                offset = Math.min(offset, term.getOffset());
+            }
+            return offset;
+        }
 
-            // Otherwise, return the offset of the last term of the document
-            for (int s = sentence - 1; s >= 0; --s) {
-                terms = document.getTermsBySent(s);
+        private static int extractSentenceToOffset(final KAFDocument document,
+                final int sentence) {
+            for (int s = sentence; s >= 0; --s) {
+                final List<ixa.kaflib.Term> terms = document.getTermsBySent(s);
                 if (terms != null && !terms.isEmpty()) {
                     int offset = Integer.MIN_VALUE;
                     for (final ixa.kaflib.Term term : terms) {
@@ -677,8 +689,6 @@ public abstract class Analyzer {
                     return offset;
                 }
             }
-
-            // If document is empty, return 0
             return 0;
         }
 

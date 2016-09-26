@@ -392,8 +392,8 @@ public class KE4IR {
                         id = uri.getLocalName();
                     }
                     final TermVector.Builder builder = TermVector.builder();
-                    this.analyzer.analyze(document, model, builder, 1,
-                            document.getNumSentences() + 1);
+                    this.analyzer.analyze(document, model, builder, 1, document.getNumSentences(),
+                            "");
                     final TermVector vector = builder.build();
                     outTerms.addAndGet(vector.size());
                     synchronized (writer) {
