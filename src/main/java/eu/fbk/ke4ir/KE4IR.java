@@ -31,6 +31,7 @@ import com.google.common.base.Throwables;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Ordering;
 import com.google.common.io.ByteStreams;
 
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
@@ -113,6 +114,8 @@ public class KE4IR {
 
     private final Path pathReranker;
 
+    private final Map<String, int[]> sections;
+
     private final List<String> layers;
 
     private final Set<String> evalBaseline;
@@ -151,7 +154,7 @@ public class KE4IR {
                             + "indexing, search")
                     //                    .withOption("n", "maxDocs", "specifies the maximum number of relevant documents to return for each query (default = 1000)",
                     //                            "INTEGER", CommandLine.Type.INTEGER, true, false, false)
-                    .parse(args);
+                    .withLogger(LoggerFactory.getLogger("eu.fbk")).parse(args);
 
             // Extract options
             final Path propertiesPath = Paths.get(cmd.getOptionValue("p", String.class,
@@ -277,6 +280,24 @@ public class KE4IR {
         // Retrieve results path
         this.pathResults = root.resolve(properties.getProperty(pr + "results", "results"));
 
+        // Retrieve sections (if missing, define a single section with prefix "")
+        this.sections = Maps.newHashMap();
+        for (final String token : properties.getProperty(pr + "sections", "").split("[\\s,;]+")) {
+            if (!token.isEmpty()) {
+                final int index1 = token.indexOf(':');
+                final int index2 = token.indexOf('-');
+                final String section = token.substring(0, index1);
+                final int fromSentence = index2 - index1 > 1
+                        ? Integer.parseInt(token.substring(index1 + 1, index2)) : 1;
+                final int toSentence = token.length() - index2 > 1
+                        ? Integer.parseInt(token.substring(index2 + 1)) : Integer.MAX_VALUE;
+                this.sections.put(section, new int[] { fromSentence, toSentence });
+            }
+        }
+        if (this.sections.isEmpty()) {
+            this.sections.put("", new int[] { 1, Integer.MAX_VALUE });
+        }
+
         // Retrieve layers and associated fields
         this.layers = Splitter.on(Pattern.compile("[\\s,;]+")).trimResults().omitEmptyStrings()
                 .splitToList(properties.getProperty(pr + "layers"));
@@ -305,6 +326,8 @@ public class KE4IR {
         LOGGER.info("Using enricher: {}", this.enricher);
         LOGGER.info("Using analyzer: {}", this.analyzer);
         LOGGER.info("Using ranker: {}", this.ranker);
+        LOGGER.debug("Using sections: {}", this.sections.keySet());
+        LOGGER.debug("Using layers: {}", this.layers);
     }
 
     public void enrichDocs() throws IOException {
@@ -350,17 +373,17 @@ public class KE4IR {
     }
 
     public void analyzeDocs() throws IOException {
-        analyzeHelper(this.pathDocsNAF, this.pathDocsRDFE, this.pathDocsTerms,
+        analyzeHelper(this.pathDocsNAF, this.pathDocsRDFE, this.pathDocsTerms, true,
                 "=== Analyzing documents ===");
     }
 
     public void analyzeQueries() throws IOException {
-        analyzeHelper(this.pathQueriesNAF, this.pathQueriesRDFE, this.pathQueriesTerms,
+        analyzeHelper(this.pathQueriesNAF, this.pathQueriesRDFE, this.pathQueriesTerms, false,
                 "=== Analyzing queries ===");
     }
 
     private void analyzeHelper(final Path pathNAF, final Path pathRDFE, final Path pathTerms,
-            final String message) throws IOException {
+            final boolean useSections, final String message) throws IOException {
 
         final long ts = System.currentTimeMillis();
         final AtomicLong outTerms = new AtomicLong(0L);
@@ -392,8 +415,16 @@ public class KE4IR {
                         id = uri.getLocalName();
                     }
                     final TermVector.Builder builder = TermVector.builder();
-                    this.analyzer.analyze(document, model, builder, 1, document.getNumSentences(),
-                            "");
+                    if (!useSections) {
+                        this.analyzer.analyze(document, model, builder, 1,
+                                document.getNumSentences(), "");
+                    } else {
+                        for (final Entry<String, int[]> entry : this.sections.entrySet()) {
+                            this.analyzer.analyze(document, model, builder, entry.getValue()[0],
+                                    Math.min(document.getNumSentences(), entry.getValue()[1]),
+                                    entry.getKey());
+                        }
+                    }
                     final TermVector vector = builder.build();
                     outTerms.addAndGet(vector.size());
                     synchronized (writer) {
@@ -469,8 +500,9 @@ public class KE4IR {
             final IndexSearcher searcher = new IndexSearcher(reader);
             searcher.setSimilarity(FakeSimilarity.INSTANCE);
             new Evaluation(searcher, this.maxDocs, this.maxDocsRank, this.normalize, this.ranker,
-                    this.layers, this.evalBaseline, this.evalSortMeasure, this.evalStatisticalTest)
-                            .run(queries, rels, this.pathResults);
+                    Ordering.natural().immutableSortedCopy(this.sections.keySet()), this.layers,
+                    this.evalBaseline, this.evalSortMeasure, this.evalStatisticalTest).run(queries,
+                            rels, this.pathResults);
         }
 
         LOGGER.info("Done in {} ms", System.currentTimeMillis() - ts);
@@ -482,23 +514,25 @@ public class KE4IR {
         LOGGER.info("=== Dump 4 Rerank Lucene index ===");
 
         final List<SimpleEntry<String, String>> features = new ArrayList<>();
-        features.add(new SimpleEntry<String, String>("textual", "tdf"));
-        features.add(new SimpleEntry<String, String>("time", "tdf"));
-        features.add(new SimpleEntry<String, String>("type", "tdf"));
-        features.add(new SimpleEntry<String, String>("frame", "tdf"));
-        features.add(new SimpleEntry<String, String>("uri", "tdf"));
+        for (final String section : this.sections.keySet()) {
+            features.add(new SimpleEntry<String, String>(section + "textual", "tdf"));
+            features.add(new SimpleEntry<String, String>(section + "time", "tdf"));
+            features.add(new SimpleEntry<String, String>(section + "type", "tdf"));
+            features.add(new SimpleEntry<String, String>(section + "frame", "tdf"));
+            features.add(new SimpleEntry<String, String>(section + "uri", "tdf"));
 
-        features.add(new SimpleEntry<String, String>("textual", "idf"));
-        features.add(new SimpleEntry<String, String>("time", "idf"));
-        features.add(new SimpleEntry<String, String>("type", "idf"));
-        features.add(new SimpleEntry<String, String>("frame", "idf"));
-        features.add(new SimpleEntry<String, String>("uri", "idf"));
+            features.add(new SimpleEntry<String, String>(section + "textual", "idf"));
+            features.add(new SimpleEntry<String, String>(section + "time", "idf"));
+            features.add(new SimpleEntry<String, String>(section + "type", "idf"));
+            features.add(new SimpleEntry<String, String>(section + "frame", "idf"));
+            features.add(new SimpleEntry<String, String>(section + "uri", "idf"));
 
-        features.add(new SimpleEntry<String, String>("textual", "sim"));
-        features.add(new SimpleEntry<String, String>("time", "sim"));
-        features.add(new SimpleEntry<String, String>("type", "sim"));
-        features.add(new SimpleEntry<String, String>("frame", "sim"));
-        features.add(new SimpleEntry<String, String>("uri", "sim"));
+            features.add(new SimpleEntry<String, String>(section + "textual", "sim"));
+            features.add(new SimpleEntry<String, String>(section + "time", "sim"));
+            features.add(new SimpleEntry<String, String>(section + "type", "sim"));
+            features.add(new SimpleEntry<String, String>(section + "frame", "sim"));
+            features.add(new SimpleEntry<String, String>(section + "uri", "sim"));
+        }
 
         // Read relevances
         final Map<String, Map<String, Double>> rels = readRelevances(this.pathQueriesRelevances);
@@ -522,7 +556,7 @@ public class KE4IR {
                 final TermVector qv = queryEntry.getValue();
 
                 final List<Entry<String, TermVector>> docs = matchDocuments(searcher, qv,
-                        this.maxDocs);
+                        this.sections.keySet(), this.maxDocs);
                 //    for (String ID:rels.get(qid).keySet()){
                 //        if (!docs.contains(ID)) docs.add(ID);
                 //    }
@@ -545,69 +579,71 @@ public class KE4IR {
                     //    final Map<String, Double> idf_qd_map = Maps.newHashMap();
                     //    final Map<String, Double> sim_qd_map = Maps.newHashMap();
 
-                    for (final Term queryTerm : qv.getTerms()) {
+                    for (final String section : this.sections.keySet()) {
+                        for (final Term queryTerm : qv.getTerms()) {
 
-                        // Retrieve the number of documents from Lucene statistics
-                        final long numDocs = searcher.collectionStatistics(queryTerm.getField())
-                                .docCount();
+                            // Retrieve the number of documents from Lucene statistics
+                            final long numDocs = searcher
+                                    .collectionStatistics(queryTerm.getField()).docCount();
 
-                        // Extract term layer and associated weight.
-                        final String layer = queryTerm.getField();
-                        //final float weight = weights.getOrDefault(layer, 0.0f);
+                            // Extract term layer and associated weight.
+                            final String layer = queryTerm.getField();
+                            //final float weight = weights.getOrDefault(layer, 0.0f);
 
-                        // Extract the document frequency (# documents having that term in the index)
-                        final TermStatistics stats = getTermStatistics(queryTerm, searcher);
+                            // Extract the document frequency (# documents having that term in the index)
+                            final TermStatistics stats = getTermStatistics(queryTerm, searcher);
 
-                        final long docFreq = stats.docFreq();
+                            final long docFreq = stats.docFreq();
 
-                        // Skip in case the document does not contain the query term
-                        final Term docTerm = dv.getTerm(layer, queryTerm.getValue());
-                        if (docTerm == null) {
-                            continue;
+                            // Skip in case the document does not contain the query term
+                            final Term docTerm = dv.getTerm(layer, queryTerm.getValue());
+                            if (docTerm == null) {
+                                continue;
+                            }
+
+                            // Extract required frequencies
+                            final double rfd = docTerm.getFrequency(); // raw frequency, document side
+                            final double nfq = queryTerm.getWeight(); // normalized frequency, query side
+
+                            // Compute TF / IDF
+                            final float tfd = (float) (1.0 + Math.log(rfd)); // TF, document side
+                            final float tfq = (float) nfq; // TF, query side
+                            final float idf = (float) Math.log(numDocs / (double) docFreq); // IDF
+
+                            // Update the document score
+                            //scores[i] += tfd * idf * idf * tfd * weight;
+                            //qid, did, layer, value....
+
+                            //empty layer
+                            final String sectionLayer = section + layer;
+                            if (!qd_map.containsKey(sectionLayer)) {
+                                final Map<String, Double> qd_map_entry = Maps.newHashMap();
+                                qd_map.put(sectionLayer, qd_map_entry);
+                            }
+                            final Map<String, Double> qd_map_entry = qd_map.get(sectionLayer);
+
+                            double tdfscore = 0;
+                            if (qd_map_entry.containsKey("tdf")) {
+                                tdfscore = qd_map_entry.get("tdf");
+                            }
+                            tdfscore += tfd * tfq;
+                            qd_map_entry.put("tdf", tdfscore);
+
+                            double idfscore = 0;
+                            if (qd_map_entry.containsKey("idf")) {
+                                idfscore = qd_map_entry.get("idf");
+                            }
+                            idfscore += idf * idf;
+                            qd_map_entry.put("idf", idfscore);
+
+                            double simscore = 0;
+                            if (qd_map_entry.containsKey("sim")) {
+                                simscore = qd_map_entry.get("sim");
+                            }
+                            simscore += tfd * tfq * idf * idf;
+                            qd_map_entry.put("sim", simscore);
+                            qd_map.put(sectionLayer, qd_map_entry);
                         }
-
-                        // Extract required frequencies
-                        final double rfd = docTerm.getFrequency(); // raw frequency, document side
-                        final double nfq = queryTerm.getWeight(); // normalized frequency, query side
-
-                        // Compute TF / IDF
-                        final float tfd = (float) (1.0 + Math.log(rfd)); // TF, document side
-                        final float tfq = (float) nfq; // TF, query side
-                        final float idf = (float) Math.log(numDocs / (double) docFreq); // IDF
-
-                        // Update the document score
-                        //scores[i] += tfd * idf * idf * tfd * weight;
-                        //qid, did, layer, value....
-
-                        //empty layer
-                        if (!qd_map.containsKey(layer)) {
-                            final Map<String, Double> qd_map_entry = Maps.newHashMap();
-                            qd_map.put(layer, qd_map_entry);
-                        }
-                        final Map<String, Double> qd_map_entry = qd_map.get(layer);
-
-                        double tdfscore = 0;
-                        if (qd_map_entry.containsKey("tdf")) {
-                            tdfscore = qd_map_entry.get("tdf");
-                        }
-                        tdfscore += tfd * tfq;
-                        qd_map_entry.put("tdf", tdfscore);
-
-                        double idfscore = 0;
-                        if (qd_map_entry.containsKey("idf")) {
-                            idfscore = qd_map_entry.get("idf");
-                        }
-                        idfscore += idf * idf;
-                        qd_map_entry.put("idf", idfscore);
-
-                        double simscore = 0;
-                        if (qd_map_entry.containsKey("sim")) {
-                            simscore = qd_map_entry.get("sim");
-                        }
-                        simscore += tfd * tfq * idf * idf;
-                        qd_map_entry.put("sim", simscore);
-                        qd_map.put(layer, qd_map_entry);
-
                     }
 
                     q_map.put(did, qd_map);
@@ -664,12 +700,12 @@ public class KE4IR {
 
                         for (int i = 0; i < features.size(); i++) {
                             double measure = 0.0;
-                            final String layer = features.get(i).getKey();
+                            final String sectionLayer = features.get(i).getKey();
                             final String mes4layer = features.get(i).getValue();
 
-                            if (d.getValue().containsKey(layer)) {
-                                if (d.getValue().get(layer).containsKey(mes4layer)) {
-                                    measure = d.getValue().get(layer).get(mes4layer);
+                            if (d.getValue().containsKey(sectionLayer)) {
+                                if (d.getValue().get(sectionLayer).containsKey(mes4layer)) {
+                                    measure = d.getValue().get(sectionLayer).get(mes4layer);
                                 }
                             }
                             line += i + 1 + ":" + measure + " ";
@@ -741,16 +777,20 @@ public class KE4IR {
     }
 
     private static List<Entry<String, TermVector>> matchDocuments(final IndexSearcher searcher,
-            final TermVector queryVector, final Integer maxDocs)
+            final TermVector queryVector, final Iterable<String> sections, final Integer maxDocs)
             throws IOException, ParseException {
 
         // Compose the query string
+        // TODO: in Evaluation candidates are extracted differently (!)
         final StringBuilder builder = new StringBuilder();
         String separator = "";
-        for (final Term term : queryVector.getTerms()) {
-            builder.append(separator);
-            builder.append(term.getField()).append(":\"").append(term.getValue()).append("\"");
-            separator = " OR ";
+        for (final String section : sections) {
+            for (final Term term : queryVector.getTerms()) {
+                builder.append(separator);
+                builder.append(section + term.getField()).append(":\"").append(term.getValue())
+                        .append("\"");
+                separator = " OR ";
+            }
         }
         final String queryString = builder.toString();
 

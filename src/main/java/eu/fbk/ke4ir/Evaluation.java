@@ -60,6 +60,8 @@ final class Evaluation {
 
     private final Ranker ranker;
 
+    private final List<String> sections;
+
     private final List<String> layers;
 
     private final Measure sortMeasure;
@@ -76,10 +78,13 @@ final class Evaluation {
 
     private final Boolean normalize;
 
-    public Evaluation(final IndexSearcher searcher, final Integer maxDocs, final Integer maxDocsRank, final Boolean normalize, final Ranker ranker,
-            final Iterable<String> layers, final Iterable<String> baselineLayers,
-            final Measure sortMeasure, final String statisticalTest) {
+    public Evaluation(final IndexSearcher searcher, final Integer maxDocs,
+            final Integer maxDocsRank, final Boolean normalize, final Ranker ranker,
+            final Iterable<String> sections, final Iterable<String> layers,
+            final Iterable<String> baselineLayers, final Measure sortMeasure,
+            final String statisticalTest) {
 
+        final List<String> sectionList = ImmutableList.copyOf(sections);
         final List<String> layerList = ImmutableList.copyOf(layers);
         final String[][] settings = new String[(1 << layerList.size()) - 1][];
         final Set<String> baselineSet = ImmutableSet.copyOf(baselineLayers);
@@ -100,6 +105,7 @@ final class Evaluation {
 
         this.searcher = searcher;
         this.ranker = ranker;
+        this.sections = sectionList;
         this.layers = layerList;
         this.sortMeasure = sortMeasure;
         this.statisticalTest = statisticalTest;
@@ -145,31 +151,38 @@ final class Evaluation {
     private Ranker.Statistics computeStatistics(final Iterable<TermVector> queryVectors)
             throws IOException {
 
-        // Retrieve statistics for all the configured layers
+        // Retrieve statistics for all the configured section/layers pairs
         final Map<String, CollectionStatistics> layerStats = Maps.newHashMap();
-        for (final String layer : this.layers) {
-            layerStats.put(layer, this.searcher.collectionStatistics(layer));
-
+        for (final String section : this.sections) {
+            for (final String layer : this.layers) {
+                final String sectionLayer = section + layer;
+                layerStats.put(sectionLayer, this.searcher.collectionStatistics(sectionLayer));
+            }
         }
 
         // Retrieve statistics for all the terms appearing in queries
         final Map<Term, TermStatistics> termStats = Maps.newHashMap();
         for (final TermVector queryVector : queryVectors) {
-            for (final Term term : queryVector.getTerms()) {
-                if (!termStats.containsKey(term)) {
-                    final String layer = term.getField();
-                    final String value = term.getValue();
-                    final org.apache.lucene.index.Term luceneTerm;
-                    luceneTerm = new org.apache.lucene.index.Term(layer, value);
-
-                    termStats.put(term, this.searcher.termStatistics(luceneTerm, //
-                            TermContext.build(this.searcher.getTopReaderContext(), luceneTerm)));
+            for (final Term queryTerm : queryVector.getTerms()) {
+                for (final String section : this.sections) {
+                    final String sectionLayer = section + queryTerm.getField();
+                    final String value = queryTerm.getValue();
+                    final Term docTerm = Term.create(sectionLayer, value);
+                    if (!termStats.containsKey(docTerm)) {
+                        final org.apache.lucene.index.Term luceneTerm;
+                        luceneTerm = new org.apache.lucene.index.Term(sectionLayer, value);
+                        termStats.put(docTerm,
+                                this.searcher.termStatistics(luceneTerm, //
+                                        TermContext.build(this.searcher.getTopReaderContext(),
+                                                luceneTerm)));
+                    }
                 }
             }
         }
 
         // Build and return the Stats that will be supplied to the Ranker
-        return new Ranker.Statistics(layerStats, termStats, searcher);
+        return new Ranker.Statistics(this.sections, this.layers, layerStats, termStats,
+                this.searcher);
     }
 
     private List<QueryEvaluation> evaluateQueries(final Map<String, TermVector> queries,
@@ -183,7 +196,8 @@ final class Evaluation {
                 .build();
         for (final String queryID : Ordering.natural().sortedCopy(queries.keySet())) {
             evaluations.add(new QueryEvaluation(queryID, queries.get(queryID), docIDs, docVectors,
-                    rels.get(queryID), statistics, this.maxDocs, this.maxDocsRank, this.normalize));
+                    rels.get(queryID), statistics, this.maxDocs, this.maxDocsRank,
+                    this.normalize));
         }
         Environment.run(evaluations);
         return evaluations;
@@ -203,12 +217,14 @@ final class Evaluation {
         return scores;
     }
 
+    // TODO: perhaps the statistical tests should migrate to RankingScore (computed as part of builder behaviour)
+
     private Map<Measure, float[]> statisticalTest(final List<QueryEvaluation> evaluations) {
 
         // Allocate a map mapping each measure to a vector of p-values (one for each setting)
         final Map<Measure, float[]> pvalues = Maps.newHashMap();
 
-        // Populate the map iterating over considred measures
+        // Populate the map iterating over considered measures
         final int numQueries = evaluations.size();
         for (final Measure measure : REPORTED_MEASURES) {
 
@@ -304,16 +320,10 @@ final class Evaluation {
             final Iterable<QueryEvaluation> evaluations, final int settingIndex)
             throws IOException {
 
-        try (Writer writer = IO
-                .utf8Writer(
-                        IO.buffer(
-                                IO.write(
-                                        resultPath
-                                                .resolve("setting-"
-                                                        + Joiner.on('-')
-                                                                .join(this.settings[settingIndex])
-                                                        + ".csv")
-                                                .toAbsolutePath().toString())))) {
+        try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(resultPath
+                .resolve( //
+                        "setting-" + Joiner.on('-').join(this.settings[settingIndex]) + ".csv")
+                .toAbsolutePath().toString())))) {
             writer.append("query");
             for (final Measure measure : REPORTED_MEASURES) {
                 writer.append(";").append(measure.toString());
@@ -502,6 +512,7 @@ final class Evaluation {
         final Ranker.Statistics statistics;
 
         final Integer maxDocs;
+
         final Integer maxDocsRank;
 
         final Boolean normalize;
@@ -516,8 +527,7 @@ final class Evaluation {
                 final Cache<Integer, String> cachedDocumentIDs,
                 final Cache<String, TermVector> cachedDocumentVectors,
                 final Map<String, Double> rels, final Ranker.Statistics statistics,
-                final Integer maxDocs,
-                        final Integer maxDocsRank, final Boolean normalize) {
+                final Integer maxDocs, final Integer maxDocsRank, final Boolean normalize) {
 
             this.queryID = queryID;
             this.queryVector = queryVector;
@@ -530,7 +540,6 @@ final class Evaluation {
             this.maxDocs = maxDocs;
             this.maxDocsRank = maxDocsRank;
             this.normalize = normalize;
-
 
         }
 
@@ -562,12 +571,16 @@ final class Evaluation {
             for (final String layer : Evaluation.this.layers) {
 
                 // Compose the query string
+                // TODO: validate with Marco
                 final StringBuilder builder = new StringBuilder();
                 String separator = "";
-                for (final Term term : this.queryVector.getTerms(layer)) {
-                    builder.append(separator);
-                    builder.append(layer).append(":\"").append(term.getValue()).append("\"");
-                    separator = " OR ";
+                for (final String section : Evaluation.this.sections) {
+                    for (final Term term : this.queryVector.getTerms(layer)) {
+                        builder.append(separator);
+                        builder.append(section + layer).append(":\"").append(term.getValue())
+                                .append("\"");
+                        separator = " OR ";
+                    }
                 }
                 final String queryString = builder.toString();
 
@@ -642,11 +655,13 @@ final class Evaluation {
                             hitList.add(new Hit(ids[j], scores[j]));
                         }
                     }
+                    LOGGER.debug("Ranked {} results, {} non-zero results obtained", vectors.length,
+                            hitList.size());
 
                     final Hit[] hits = hitList.toArray(new Hit[hitList.size()]);
                     Arrays.sort(hits);
                     //cut hits a n
-                    int truncate= Integer.min(hits.length,this.maxDocsRank);
+                    final int truncate = Integer.min(hits.length, this.maxDocsRank);
                     //System.out.println("TRUNCATE: "+truncate);
                     this.hits[i] = hits;
 
