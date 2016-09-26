@@ -13,9 +13,13 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.*;
 import java.util.AbstractMap.SimpleEntry;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
@@ -145,14 +149,14 @@ public class KE4IR {
                     .withHeader("supports all the operations involved in the evaluation of " //
                             + "semantic information retrieval: enrichment, analysis, " //
                             + "indexing, search")
-//                    .withOption("n", "maxDocs", "specifies the maximum number of relevant documents to return for each query (default = 1000)",
-//                            "INTEGER", CommandLine.Type.INTEGER, true, false, false)
+                    //                    .withOption("n", "maxDocs", "specifies the maximum number of relevant documents to return for each query (default = 1000)",
+                    //                            "INTEGER", CommandLine.Type.INTEGER, true, false, false)
                     .parse(args);
 
             // Extract options
             final Path propertiesPath = Paths.get(cmd.getOptionValue("p", String.class,
                     System.getProperty("user.dir") + "/ke4ir.properties"));
-//            Integer maxDocs = cmd.getOptionValue("n", Integer.class,1000);
+            //            Integer maxDocs = cmd.getOptionValue("n", Integer.class,1000);
             boolean enrichDocs = cmd.hasOption("enrich-docs") || cmd.hasOption("e");
             boolean enrichQueries = cmd.hasOption("enrich-queries") || cmd.hasOption("e");
             boolean analyzeDocs = cmd.hasOption("analyze-docs") || cmd.hasOption("a");
@@ -388,7 +392,8 @@ public class KE4IR {
                         id = uri.getLocalName();
                     }
                     final TermVector.Builder builder = TermVector.builder();
-                    this.analyzer.analyze(document, model, builder);
+                    this.analyzer.analyze(document, model, builder, 1,
+                            document.getNumSentences() + 1);
                     final TermVector vector = builder.build();
                     outTerms.addAndGet(vector.size());
                     synchronized (writer) {
@@ -463,9 +468,9 @@ public class KE4IR {
         try (IndexReader reader = DirectoryReader.open(FSDirectory.open(this.pathIndex))) {
             final IndexSearcher searcher = new IndexSearcher(reader);
             searcher.setSimilarity(FakeSimilarity.INSTANCE);
-            new Evaluation(searcher, this.maxDocs, this.maxDocsRank, this.normalize, this.ranker, this.layers, this.evalBaseline,
-                    this.evalSortMeasure, this.evalStatisticalTest).run(queries, rels,
-                            this.pathResults);
+            new Evaluation(searcher, this.maxDocs, this.maxDocsRank, this.normalize, this.ranker,
+                    this.layers, this.evalBaseline, this.evalSortMeasure, this.evalStatisticalTest)
+                            .run(queries, rels, this.pathResults);
         }
 
         LOGGER.info("Done in {} ms", System.currentTimeMillis() - ts);
@@ -516,7 +521,8 @@ public class KE4IR {
                 final String qid = queryEntry.getKey();
                 final TermVector qv = queryEntry.getValue();
 
-                final List<Entry<String, TermVector>> docs = matchDocuments(searcher, qv, this.maxDocs);
+                final List<Entry<String, TermVector>> docs = matchDocuments(searcher, qv,
+                        this.maxDocs);
                 //    for (String ID:rels.get(qid).keySet()){
                 //        if (!docs.contains(ID)) docs.add(ID);
                 //    }
@@ -610,7 +616,6 @@ public class KE4IR {
                 rankmap.put(qid, q_map);
             }
 
-
             Path path = this.pathReranker.resolve("reranker.txt").toAbsolutePath();
             Files.createDirectories(path.getParent());
             try (Writer writer = IO.utf8Writer(IO.buffer(IO.write(path.toString())))) {
@@ -634,7 +639,6 @@ public class KE4IR {
 
                     //Comparator<Entry<Integer, String>> com2 =
                     //Comparator.comparing(Map.Entry<Integer,String>::getValue).reversed();
-
 
                     final Stream<Map.Entry<String, Map<String, Map<String, Double>>>> sortedDoc = q
                             .getValue().entrySet().stream();
@@ -737,7 +741,8 @@ public class KE4IR {
     }
 
     private static List<Entry<String, TermVector>> matchDocuments(final IndexSearcher searcher,
-            final TermVector queryVector, final Integer maxDocs) throws IOException, ParseException {
+            final TermVector queryVector, final Integer maxDocs)
+            throws IOException, ParseException {
 
         // Compose the query string
         final StringBuilder builder = new StringBuilder();

@@ -31,12 +31,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.tartarus.snowball.SnowballProgram;
 
-import ixa.kaflib.KAFDocument;
-
 import eu.fbk.ke4ir.TermVector.Builder;
 import eu.fbk.rdfpro.util.Hash;
 import eu.fbk.rdfpro.util.Namespaces;
 import eu.fbk.rdfpro.util.QuadModel;
+
+import ixa.kaflib.KAFDocument;
 
 /**
  * Analyzes a text (document or query) and the associated (enriched) knowledge graph, extracting
@@ -57,8 +57,13 @@ public abstract class Analyzer {
      *            the (enriched) knowledge graph associated to the document or query
      * @param builder
      *            the sink object where to send extracted terms
+     * @param fromSentence
+     *            the (1-based) index of the first sentence to process, included
+     * @param toSentence
+     *            the (1-based) index up to which input text should be processed, excluded
      */
-    public abstract void analyze(KAFDocument document, QuadModel model, TermVector.Builder builder);
+    public abstract void analyze(KAFDocument document, QuadModel model, TermVector.Builder builder,
+            int fromSentence, int toSentence);
 
     /**
      * {@inheritDoc} Emits a descriptive string describe the Analyzer and its configuration. This
@@ -201,28 +206,28 @@ public abstract class Analyzer {
         final List<Analyzer> analyzers = new ArrayList<>();
 
         // Retrieve the types of analyzer enabled in the configuration
-        final Set<String> types = ImmutableSet.copyOf(properties.getProperty(prefix + "type", "")
-                .split("\\s+"));
+        final Set<String> types = ImmutableSet
+                .copyOf(properties.getProperty(prefix + "type", "").split("\\s+"));
 
         // Add an analyzer extracting stems, if enabled
         if (types.contains("textual")) {
             final String stemmerClass = properties.getProperty(prefix + "textual.stemmer");
             final String stopwordsProp = properties.getProperty(prefix + "textual.stopwords");
-            final Set<String> stopwords = stopwordsProp == null ? null : ImmutableSet
-                    .copyOf(stopwordsProp.split("\\s+"));
+            final Set<String> stopwords = stopwordsProp == null ? null
+                    : ImmutableSet.copyOf(stopwordsProp.split("\\s+"));
             analyzers.add(createTextualAnalyzer(stemmerClass, stopwords));
         }
 
         // Add a semantic analyzer, if enabled
         if (types.contains("semantic")) {
-            final URI denotedByProperty = new URIImpl(properties.getProperty(prefix
-                    + "semantic.denotedby"));
-            final Set<String> uriNamespaces = ImmutableSet.copyOf(properties.getProperty(
-                    prefix + "semantic.uri", "").split("\\s+"));
-            final Set<String> typeNamespaces = ImmutableSet.copyOf(properties.getProperty(
-                    prefix + "semantic.type", "").split("\\s+"));
-            final Set<String> frameNamespaces = ImmutableSet.copyOf(properties.getProperty(
-                    prefix + "semantic.frame", "").split("\\s+"));
+            final URI denotedByProperty = new URIImpl(
+                    properties.getProperty(prefix + "semantic.denotedby"));
+            final Set<String> uriNamespaces = ImmutableSet
+                    .copyOf(properties.getProperty(prefix + "semantic.uri", "").split("\\s+"));
+            final Set<String> typeNamespaces = ImmutableSet
+                    .copyOf(properties.getProperty(prefix + "semantic.type", "").split("\\s+"));
+            final Set<String> frameNamespaces = ImmutableSet
+                    .copyOf(properties.getProperty(prefix + "semantic.frame", "").split("\\s+"));
             analyzers.add(createSemanticAnalyzer(denotedByProperty, uriNamespaces, typeNamespaces,
                     frameNamespaces));
         }
@@ -241,9 +246,9 @@ public abstract class Analyzer {
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder) {
+                final Builder builder, final int fromSentence, final int toSentence) {
             for (final Analyzer analyzer : this.analyzers) {
-                analyzer.analyze(document, model, builder);
+                analyzer.analyze(document, model, builder, fromSentence, toSentence);
             }
         }
 
@@ -260,7 +265,7 @@ public abstract class Analyzer {
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder) {
+                final Builder builder, final int fromSentence, final int toSentence) {
         }
 
     }
@@ -326,21 +331,23 @@ public abstract class Analyzer {
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder) {
+                final Builder builder, final int fromSentence, final int toSentence) {
 
             // Iterate over all the tokens in the document
-            for (final ixa.kaflib.Term term : document.getTerms()) {
-                final String wf = term.getStr().trim();
-                for (final String subWord : extract(wf)) {
-                    if (isValidTerm(subWord)) {
-                        try {
-                            final SnowballProgram stemmer = this.stemmerClass.newInstance();
-                            stemmer.setCurrent(subWord.toLowerCase());
-                            stemmer.stem();
-                            final String subWordStem = stemmer.getCurrent();
-                            builder.addTerm("textual", subWordStem);
-                        } catch (final InstantiationException | IllegalAccessException ex) {
-                            Throwables.propagate(ex);
+            for (int sentence = fromSentence; sentence < toSentence; ++sentence) {
+                for (final ixa.kaflib.Term term : document.getTermsBySent(sentence)) {
+                    final String wf = term.getStr().trim();
+                    for (final String subWord : extract(wf)) {
+                        if (isValidTerm(subWord)) {
+                            try {
+                                final SnowballProgram stemmer = this.stemmerClass.newInstance();
+                                stemmer.setCurrent(subWord.toLowerCase());
+                                stemmer.stem();
+                                final String subWordStem = stemmer.getCurrent();
+                                builder.addTerm("textual", subWordStem);
+                            } catch (final InstantiationException | IllegalAccessException ex) {
+                                Throwables.propagate(ex);
+                            }
                         }
                     }
                 }
@@ -431,9 +438,16 @@ public abstract class Analyzer {
 
         private static final URI OWLTIME_YEAR = new URIImpl("http://www.w3.org/TR/owl-time#year");
 
-        private static final URI OWLTIME_MONTH = new URIImpl("http://www.w3.org/TR/owl-time#month");
+        private static final URI OWLTIME_MONTH = new URIImpl(
+                "http://www.w3.org/TR/owl-time#month");
 
         private static final URI OWLTIME_DAY = new URIImpl("http://www.w3.org/TR/owl-time#day");
+
+        private static final URI NIF_BEGIN_INDEX = new URIImpl(
+                "http://persistence.uni-leipzig.org/nlp2rdf/ontologies/nif-core#beginIndex");
+
+        private static final URI NIF_END_INDEX = new URIImpl(
+                "http://persistence.uni-leipzig.org/nlp2rdf/ontologies/nif-core#endIndex");
 
         private final URI denotedByProperty;
 
@@ -449,25 +463,32 @@ public abstract class Analyzer {
                 @Nullable final Iterable<String> frameNamespaces) {
 
             this.denotedByProperty = Objects.requireNonNull(denotedByProperty);
-            this.uriNamespaces = uriNamespaces == null ? ImmutableSet.of() : ImmutableSet
-                    .copyOf(uriNamespaces);
-            this.typeNamespaces = typeNamespaces == null ? ImmutableSet.of() : ImmutableSet
-                    .copyOf(typeNamespaces);
-            this.frameNamespaces = frameNamespaces == null ? ImmutableSet.of() : ImmutableSet
-                    .copyOf(frameNamespaces);
+            this.uriNamespaces = uriNamespaces == null ? ImmutableSet.of()
+                    : ImmutableSet.copyOf(uriNamespaces);
+            this.typeNamespaces = typeNamespaces == null ? ImmutableSet.of()
+                    : ImmutableSet.copyOf(typeNamespaces);
+            this.frameNamespaces = frameNamespaces == null ? ImmutableSet.of()
+                    : ImmutableSet.copyOf(frameNamespaces);
         }
 
         @Override
         public void analyze(final KAFDocument document, final QuadModel model,
-                final Builder builder) {
+                final Builder builder, final int fromSentence, final int toSentence) {
+
+            // Retrieve start and end offsets identifying the fragment of text to analyze
+            final int fromOffset = extractSentenceOffset(document, fromSentence);
+            final int toOffset = extractSentenceOffset(document, toSentence);
 
             // Extract entities and mentions, plus the mapping mention -> denoted entities
             final Set<Resource> entities = Sets.newHashSet();
             final Multimap<Resource, Resource> mentions = HashMultimap.create();
             for (final Statement stmt : model.filter(null, this.denotedByProperty, null)) {
-                if (stmt.getObject() instanceof Resource) {
-                    entities.add(stmt.getSubject());
-                    mentions.put((Resource) stmt.getObject(), stmt.getSubject());
+                if (stmt.getObject() instanceof URI) {
+                    final URI mention = (URI) stmt.getObject();
+                    if (containsMention(model, fromOffset, toOffset, mention)) {
+                        entities.add(stmt.getSubject());
+                        mentions.put(mention, stmt.getSubject());
+                    }
                 }
             }
 
@@ -631,6 +652,63 @@ public abstract class Analyzer {
                 LOGGER.warn("Could not extract date components from OWL Time description "
                         + owltimeDesc, ex);
             }
+        }
+
+        private static int extractSentenceOffset(final KAFDocument document, final int sentence) {
+
+            // If the sentence exists, return the offset of its first term
+            List<ixa.kaflib.Term> terms = document.getTermsBySent(sentence);
+            if (terms != null && !terms.isEmpty()) {
+                int offset = Integer.MAX_VALUE;
+                for (final ixa.kaflib.Term term : terms) {
+                    offset = Math.min(offset, term.getOffset());
+                }
+                return offset;
+            }
+
+            // Otherwise, return the offset of the last term of the document
+            for (int s = sentence - 1; s >= 0; --s) {
+                terms = document.getTermsBySent(s);
+                if (terms != null && !terms.isEmpty()) {
+                    int offset = Integer.MIN_VALUE;
+                    for (final ixa.kaflib.Term term : terms) {
+                        offset = Math.max(offset, term.getOffset() + term.getLength());
+                    }
+                    return offset;
+                }
+            }
+
+            // If document is empty, return 0
+            return 0;
+        }
+
+        private static boolean containsMention(final QuadModel model, final int fromOffset,
+                final int toOffset, final URI mention) {
+
+            int mentionFromOffset, mentionToOffset;
+
+            try {
+                final String mentionStr = mention.stringValue();
+                final int index3 = mentionStr.lastIndexOf(',');
+                final int index1 = mentionStr.lastIndexOf('=', index3);
+                final int index2 = mentionStr.indexOf(',', index1);
+                mentionFromOffset = Integer.parseInt(mentionStr.substring(index1 + 1, index2));
+                mentionToOffset = Integer.parseInt(mentionStr.substring(index3 + 1));
+            } catch (final Throwable ex) {
+                try {
+                    mentionFromOffset = model.filter(mention, NIF_BEGIN_INDEX, null)
+                            .objectLiteral().intValue();
+                    mentionToOffset = model.filter(mention, NIF_END_INDEX, null).objectLiteral()
+                            .intValue();
+                } catch (final Throwable ex2) {
+                    ex.addSuppressed(ex2);
+                    LOGGER.warn("Could not identify begin and end index of mention: " + mention
+                            + " (ignoring)", ex);
+                    return false;
+                }
+            }
+
+            return mentionFromOffset >= fromOffset && mentionToOffset <= toOffset;
         }
 
     }
