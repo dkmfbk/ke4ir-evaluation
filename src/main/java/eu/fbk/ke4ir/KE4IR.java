@@ -22,6 +22,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import com.google.common.base.Charsets;
 import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
 import com.google.common.collect.*;
@@ -191,55 +192,59 @@ public class KE4IR {
             rerank |= Boolean.parseBoolean(properties.getProperty(pr + "rerank", "false"));
             weight |= Boolean.parseBoolean(properties.getProperty(pr + "weight", "false"));
 
-            // Initialize the KE4IR main object
-            final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.");
-            LOGGER.info("Initialized in {} ms", System.currentTimeMillis() - ts);
 
-            // Perform the requested operations
-            if (enrichQueries) {
-                ke4ir.enrichQueries();
-            }
-            if (enrichDocs) {
-                ke4ir.enrichDocs();
-            }
-            if (analyzeQueries) {
-                ke4ir.analyzeQueries();
-            }
-            if (analyzeDocs) {
-                ke4ir.analyzeDocs();
-            }
-            if (index) {
-                ke4ir.index();
-            }
-            if (search) {
-                ke4ir.search();
-            }
-            if (rerank) {
-                ke4ir.dump4Reranker();
-            }
 
             if (weight) {
 
+                final List<String> data = Lists.newArrayList();
+                data.add("value;setting;p1;p1ss;p3;p3ss;p5;p5ss;p10;p10ss;mrr;mrrss;ndcg;ndcgss;ndcg10;ndcg10ss;map;mapss;map10;map10ss");
+                for (int j = 0; j <= 100; j += 1) {
+                    final double w = j * 0.01;
+                    final String ws = "textual:" + (1 - w) + " uri:" + w / 4 + " type:" + w / 4
+                            + " frame:" + w / 4 + " time:" + w / 4;
+                    System.out.println("\n\n\n**** " + ws + " ****\n\n");
+                    properties.setProperty("ke4ir.ranker.tfidf.weights", ws);
+                    final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.");
+                    LOGGER.info("Initialized in {} ms", System.currentTimeMillis() - ts);
+                    ke4ir.search();
 
+                    final List<String> lines = Files.readAllLines(propertiesPath.getParent().resolve(
+                            "results/aggregates.csv"));
+                    for (int i = 1; i < lines.size(); ++i) {
+                        data.add(String.format("%.2f", w) + ";" + lines.get(i));
+                    }
+                }
+                Files.write(propertiesPath.getParent().resolve("results/experiment.csv"), data,
+                        Charsets.UTF_8);
 
+            } else {
+                final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.");
+                LOGGER.info("Initialized in {} ms", System.currentTimeMillis() - ts);
+                // Initialize the KE4IR main object
 
-                //            final List<String> data = Lists.newArrayList();
-                //            for (int j = 0; j <= 100; j += 1) {
-                //                final double w = j * 0.01;
-                //                final String ws = "textual:" + (1 - w) + " uri:" + w / 4 + " type:" + w / 4
-                //                        + " frame:" + w / 4 + " time:" + w / 4;
-                //                System.out.println("\n\n\n**** " + ws + " ****\n\n");
-                //                properties.setProperty("ke4ir.ranker.tfidf.weights", ws);
-                ke4ir.search();
+                // Perform the requested operations
+                if (enrichQueries) {
+                    ke4ir.enrichQueries();
+                }
+                if (enrichDocs) {
+                    ke4ir.enrichDocs();
+                }
+                if (analyzeQueries) {
+                    ke4ir.analyzeQueries();
+                }
+                if (analyzeDocs) {
+                    ke4ir.analyzeDocs();
+                }
+                if (index) {
+                    ke4ir.index();
+                }
+                if (search) {
+                    ke4ir.search();
+                }
+                if (rerank) {
+                    ke4ir.dump4Reranker();
+                }
 
-                //                final List<String> lines = Files.readAllLines(propertiesPath.getParent().resolve(
-                //                        "results/aggregates.csv"));
-                //                for (int i = 1; i < lines.size(); ++i) {
-                //                    data.add(String.format("%.2f", w) + ";" + lines.get(i));
-                //                }
-                //            }
-                //            Files.write(propertiesPath.getParent().resolve("results/experiment.csv"), data,
-                //                    Charsets.UTF_8);
 
             }
 
@@ -551,6 +556,9 @@ public class KE4IR {
             features.add(new SimpleEntry<String, String>(section + "uri", "sim"));
         }
 
+
+
+
         // Read relevances
         final Map<String, Map<String, Double>> rels = readRelevances(this.pathQueriesRelevances);
 
@@ -573,7 +581,7 @@ public class KE4IR {
                 final TermVector qv = queryEntry.getValue();
 
                 final List<Entry<String, TermVector>> docs = matchDocuments(searcher, qv,
-                        this.sections.keySet(), this.maxDocs);
+                        this.sections.keySet(), this.layers, this.maxDocs);
                 //    for (String ID:rels.get(qid).keySet()){
                 //        if (!docs.contains(ID)) docs.add(ID);
                 //    }
@@ -599,21 +607,24 @@ public class KE4IR {
                     for (final String section : this.sections.keySet()) {
                         for (final Term queryTerm : qv.getTerms()) {
 
-                            // Retrieve the number of documents from Lucene statistics
-                            final long numDocs = searcher
-                                    .collectionStatistics(queryTerm.getField()).docCount();
-
                             // Extract term layer and associated weight.
                             final String layer = queryTerm.getField();
+                            final String sectionLayer = section + layer;
+
+                            // Retrieve the number of documents from Lucene statistics
+                            final long numDocs = searcher
+                                    .collectionStatistics(sectionLayer).docCount();
+
+
                             //final float weight = weights.getOrDefault(layer, 0.0f);
 
                             // Extract the document frequency (# documents having that term in the index)
-                            final TermStatistics stats = getTermStatistics(queryTerm, searcher);
+                            final TermStatistics stats = getTermStatistics(queryTerm, section, searcher);
 
                             final long docFreq = stats.docFreq();
 
                             // Skip in case the document does not contain the query term
-                            final Term docTerm = dv.getTerm(layer, queryTerm.getValue());
+                            final Term docTerm = dv.getTerm(sectionLayer, queryTerm.getValue());
                             if (docTerm == null) {
                                 continue;
                             }
@@ -632,7 +643,7 @@ public class KE4IR {
                             //qid, did, layer, value....
 
                             //empty layer
-                            final String sectionLayer = section + layer;
+
                             if (!qd_map.containsKey(sectionLayer)) {
                                 final Map<String, Double> qd_map_entry = Maps.newHashMap();
                                 qd_map.put(sectionLayer, qd_map_entry);
@@ -794,48 +805,55 @@ public class KE4IR {
     }
 
     private static List<Entry<String, TermVector>> matchDocuments(final IndexSearcher searcher,
-            final TermVector queryVector, final Iterable<String> sections, final Integer maxDocs)
+            final TermVector queryVector, final Iterable<String> sections, final Iterable<String> layers, final Integer maxDocs)
             throws IOException, ParseException {
 
-        // Compose the query string
-        // TODO: in Evaluation candidates are extracted differently (!)
-        final StringBuilder builder = new StringBuilder();
-        String separator = "";
-        for (final String section : sections) {
-            for (final Term term : queryVector.getTerms()) {
-                builder.append(separator);
-                builder.append(section + term.getField()).append(":\"").append(term.getValue())
-                        .append("\"");
-                separator = " OR ";
-            }
-        }
-        final String queryString = builder.toString();
-
-        // Evaluate the query
-        final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
-        final Query query = parser.parse(queryString);
-        final TopDocs results = searcher.search(query, maxDocs);
-        LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length, queryString);
-
-        // Populate the matches multimap. This requires mapping the numerical doc ID to
-        // the corresponding String one.
         final List<Entry<String, TermVector>> entries = new ArrayList<>();
-        for (final ScoreDoc scoreDoc : results.scoreDocs) {
-            final Document doc = searcher.doc(scoreDoc.doc);
-            final String id = doc.get("id");
-            final TermVector vector = TermVector.read(doc);
-            entries.add(new SimpleEntry<>(id, vector));
+        for (final String layer : layers) {
+            // Compose the query string
+            // TODO: in Evaluation candidates are extracted differently (!)
+            final StringBuilder builder = new StringBuilder();
+            String separator = "";
+            for (final String section : sections) {
+                for (final Term term : queryVector.getTerms(layer)) {
+                    builder.append(separator);
+                    builder.append(section + layer).append(":\"").append(term.getValue())
+                            .append("\"");
+                    separator = " OR ";
+                }
+            }
+            final String queryString = builder.toString();
+
+            if (queryString.isEmpty()) {
+                continue;
+            }
+            // Evaluate the query
+            final QueryParser parser = new QueryParser("default-field", new KeywordAnalyzer());
+            final Query query = parser.parse(queryString);
+            final TopDocs results = searcher.search(query, maxDocs);
+            LOGGER.debug("{} results obtained from query {}", results.scoreDocs.length, queryString);
+
+            // Populate the matches multimap. This requires mapping the numerical doc ID to
+            // the corresponding String one.
+
+            for (final ScoreDoc scoreDoc : results.scoreDocs) {
+                final Document doc = searcher.doc(scoreDoc.doc);
+                final String id = doc.get("id");
+                final TermVector vector = TermVector.read(doc);
+                entries.add(new SimpleEntry<>(id, vector));
+            }
+
         }
         return entries;
     }
 
-    private static TermStatistics getTermStatistics(final Term term, final IndexSearcher searcher)
+    private static TermStatistics getTermStatistics(final Term term, final String section, final IndexSearcher searcher)
             throws IOException {
 
         final String layer = term.getField();
         final String value = term.getValue();
         final org.apache.lucene.index.Term luceneTerm;
-        luceneTerm = new org.apache.lucene.index.Term(layer, value);
+        luceneTerm = new org.apache.lucene.index.Term(section+layer, value);
         return searcher.termStatistics(luceneTerm, //
                 TermContext.build(searcher.getTopReaderContext(), luceneTerm));
     }
