@@ -13,13 +13,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.*;
 import java.util.AbstractMap.SimpleEntry;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Properties;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
@@ -28,10 +24,7 @@ import java.util.stream.Stream;
 
 import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
-import com.google.common.collect.FluentIterable;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Ordering;
+import com.google.common.collect.*;
 import com.google.common.io.ByteStreams;
 
 import org.apache.lucene.analysis.core.KeywordAnalyzer;
@@ -117,6 +110,7 @@ public class KE4IR {
     private final Map<String, int[]> sections;
 
     private final List<String> layers;
+    private final List<String> settings;
 
     private final Set<String> evalBaseline;
 
@@ -149,6 +143,7 @@ public class KE4IR {
                     .withOption("i", "index", "indexes document terms in Lucene")
                     .withOption("s", "search", "evaluates queries over Lucene index")
                     .withOption("r", "rerank", "dump 4 rerank")
+                    .withOption("w", "weight", "brute force weight schema finding")
                     .withHeader("supports all the operations involved in the evaluation of " //
                             + "semantic information retrieval: enrichment, analysis, " //
                             + "indexing, search")
@@ -167,6 +162,7 @@ public class KE4IR {
             boolean index = cmd.hasOption("i");
             boolean search = cmd.hasOption("s");
             boolean rerank = cmd.hasOption("r");
+            boolean weight = cmd.hasOption("w");
 
             // Abort if properties file does not exist
             if (!Files.exists(propertiesPath)) {
@@ -193,14 +189,7 @@ public class KE4IR {
             index |= Boolean.parseBoolean(properties.getProperty(pr + "index", "false"));
             search |= Boolean.parseBoolean(properties.getProperty(pr + "search", "false"));
             rerank |= Boolean.parseBoolean(properties.getProperty(pr + "rerank", "false"));
-
-            //            final List<String> data = Lists.newArrayList();
-            //            for (int j = 0; j <= 100; j += 1) {
-            //                final double w = j * 0.01;
-            //                final String ws = "textual:" + (1 - w) + " uri:" + w / 4 + " type:" + w / 4
-            //                        + " frame:" + w / 4 + " time:" + w / 4;
-            //                System.out.println("\n\n\n**** " + ws + " ****\n\n");
-            //                properties.setProperty("ke4ir.ranker.tfidf.weights", ws);
+            weight |= Boolean.parseBoolean(properties.getProperty(pr + "weight", "false"));
 
             // Initialize the KE4IR main object
             final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.");
@@ -229,14 +218,33 @@ public class KE4IR {
                 ke4ir.dump4Reranker();
             }
 
-            //                final List<String> lines = Files.readAllLines(propertiesPath.getParent().resolve(
-            //                        "results/aggregates.csv"));
-            //                for (int i = 1; i < lines.size(); ++i) {
-            //                    data.add(String.format("%.2f", w) + ";" + lines.get(i));
-            //                }
-            //            }
-            //            Files.write(propertiesPath.getParent().resolve("results/experiment.csv"), data,
-            //                    Charsets.UTF_8);
+            if (weight) {
+
+
+
+
+                //            final List<String> data = Lists.newArrayList();
+                //            for (int j = 0; j <= 100; j += 1) {
+                //                final double w = j * 0.01;
+                //                final String ws = "textual:" + (1 - w) + " uri:" + w / 4 + " type:" + w / 4
+                //                        + " frame:" + w / 4 + " time:" + w / 4;
+                //                System.out.println("\n\n\n**** " + ws + " ****\n\n");
+                //                properties.setProperty("ke4ir.ranker.tfidf.weights", ws);
+                ke4ir.search();
+
+                //                final List<String> lines = Files.readAllLines(propertiesPath.getParent().resolve(
+                //                        "results/aggregates.csv"));
+                //                for (int i = 1; i < lines.size(); ++i) {
+                //                    data.add(String.format("%.2f", w) + ";" + lines.get(i));
+                //                }
+                //            }
+                //            Files.write(propertiesPath.getParent().resolve("results/experiment.csv"), data,
+                //                    Charsets.UTF_8);
+
+            }
+
+
+
 
         } catch (final Throwable ex) {
             // Display error information and terminate
@@ -301,6 +309,15 @@ public class KE4IR {
         // Retrieve layers and associated fields
         this.layers = Splitter.on(Pattern.compile("[\\s,;]+")).trimResults().omitEmptyStrings()
                 .splitToList(properties.getProperty(pr + "layers"));
+
+        // Retrieve layers and associated fields
+        //String temp_settings = properties.getProperty(pr + "settings");
+        if (!properties.containsKey(pr + "settings"))
+            this.settings = new ArrayList<String>(){};
+        else this.settings = Splitter.on(Pattern.compile("[;]+")).trimResults().omitEmptyStrings()
+                .splitToList(properties.getProperty(pr + "settings"));
+
+        System.out.println(this.settings.toString());
 
         // Retrieve evaluation settings
         this.evalSortMeasure = RankingScore.Measure
@@ -500,7 +517,7 @@ public class KE4IR {
             final IndexSearcher searcher = new IndexSearcher(reader);
             searcher.setSimilarity(FakeSimilarity.INSTANCE);
             new Evaluation(searcher, this.maxDocs, this.maxDocsRank, this.normalize, this.ranker,
-                    Ordering.natural().immutableSortedCopy(this.sections.keySet()), this.layers,
+                    Ordering.natural().immutableSortedCopy(this.sections.keySet()), this.layers, this.settings,
                     this.evalBaseline, this.evalSortMeasure, this.evalStatisticalTest).run(queries,
                             rels, this.pathResults);
         }

@@ -9,8 +9,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import com.google.common.base.Joiner;
+import com.google.common.base.Splitter;
 import com.google.common.base.Throwables;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
@@ -80,27 +82,53 @@ final class Evaluation {
 
     public Evaluation(final IndexSearcher searcher, final Integer maxDocs,
             final Integer maxDocsRank, final Boolean normalize, final Ranker ranker,
-            final Iterable<String> sections, final Iterable<String> layers,
+            final Iterable<String> sections, final Iterable<String> layers, final Iterable<String> req_settings ,
             final Iterable<String> baselineLayers, final Measure sortMeasure,
             final String statisticalTest) {
 
         final List<String> sectionList = ImmutableList.copyOf(sections);
         final List<String> layerList = ImmutableList.copyOf(layers);
-        final String[][] settings = new String[(1 << layerList.size()) - 1][];
-        final Set<String> baselineSet = ImmutableSet.copyOf(baselineLayers);
+        final List<String> req_settingsList = ImmutableList.copyOf(req_settings);
+
+        final String[][] settings;
+
         int baselineIndex = 0;
-        for (int i = 0; i < settings.length; ++i) {
-            int index = 0;
-            settings[i] = new String[Integer.bitCount(i + 1)];
-            for (int j = 0; j < layerList.size(); ++j) {
-                if ((i + 1 & 1 << j) != 0) {
-                    settings[i][index++] = layerList.get(j);
+        final Set<String> baselineSet = ImmutableSet.copyOf(baselineLayers);
+        if (req_settingsList.isEmpty()) {
+
+
+            settings = new String[(1 << layerList.size()) - 1][];
+
+            for (int i = 0; i < settings.length; ++i) {
+                int index = 0;
+                settings[i] = new String[Integer.bitCount(i + 1)];
+                for (int j = 0; j < layerList.size(); ++j) {
+                    if ((i + 1 & 1 << j) != 0) {
+                        settings[i][index++] = layerList.get(j);
+                    }
+                }
+                if (baselineSet.size() == settings[i].length
+                        && baselineSet.containsAll(Arrays.asList(settings[i]))) {
+                    baselineIndex = i;
                 }
             }
-            if (baselineSet.size() == settings[i].length
-                    && baselineSet.containsAll(Arrays.asList(settings[i]))) {
-                baselineIndex = i;
+        } else {
+            settings = new String[req_settingsList.size()][];
+            int i=0;
+            for (String s : req_settings){
+
+                settings[i] = new String[Splitter.on(Pattern.compile("[\\s,;]+")).trimResults().omitEmptyStrings()
+                        .splitToList(s).size()];
+                Splitter.on(Pattern.compile("[\\s,;]+")).trimResults().omitEmptyStrings()
+                        .splitToList(s).toArray(settings[i]);
+                if (baselineSet.size() == settings[i].length
+                        && baselineSet.containsAll(Arrays.asList(settings[i]))) {
+                    baselineIndex = i;
+                }
+                i++;
             }
+
+
         }
 
         this.searcher = searcher;
