@@ -144,7 +144,8 @@ public class KE4IR {
                     .withOption("i", "index", "indexes document terms in Lucene")
                     .withOption("s", "search", "evaluates queries over Lucene index")
                     .withOption("r", "rerank", "dump 4 rerank")
-                    .withOption("w", "weight", "brute force weight schema finding")
+                    .withOption("w", "weight", "light brute force weight schema finding", "W", CommandLine.Type.INTEGER, false, false, false)
+                    .withOption("ww", "hazardous weight", "brute force weight schema finding", "WW", CommandLine.Type.INTEGER, false, false, false)
                     .withHeader("supports all the operations involved in the evaluation of " //
                             + "semantic information retrieval: enrichment, analysis, " //
                             + "indexing, search")
@@ -164,6 +165,10 @@ public class KE4IR {
             boolean search = cmd.hasOption("s");
             boolean rerank = cmd.hasOption("r");
             boolean weight = cmd.hasOption("w");
+            boolean heavyweight = cmd.hasOption("ww");
+
+            final int topw = cmd.getOptionValue("w", Integer.class,1);
+            final int topww = cmd.getOptionValue("ww", Integer.class,1);
 
             // Abort if properties file does not exist
             if (!Files.exists(propertiesPath)) {
@@ -191,15 +196,55 @@ public class KE4IR {
             search |= Boolean.parseBoolean(properties.getProperty(pr + "search", "false"));
             rerank |= Boolean.parseBoolean(properties.getProperty(pr + "rerank", "false"));
             weight |= Boolean.parseBoolean(properties.getProperty(pr + "weight", "false"));
+            heavyweight |= Boolean.parseBoolean(properties.getProperty(pr + "weight", "false"));
 
 
+            if (heavyweight) {
 
-            if (weight) {
+
+                final List<String> data = Lists.newArrayList();
+                data.add("w_text;w_uri;w_type;w_frame;w_time;setting;p1;p1ss;p3;p3ss;p5;p5ss;p10;p10ss;mrr;mrrss;ndcg;ndcgss;ndcg10;ndcg10ss;map;mapss;map10;map10ss");
+
+                long total=0;
+                //int top=20;
+                double increment = 1.0/(double)topww;
+                for (int a = 0; a <= topww; a += 1)
+                    for (int b = 0; b <= topww-a; b+= 1)
+                        for (int c = 0; c <= topww-(a+b); c+= 1)
+                            for (int d = 0; d <= topww-(a+b+c); d+= 1) {
+                                int e = topww-(a+b+c+d);
+                                final double wa = a * increment;
+                                final double wb = b * increment;
+                                final double wc = c * increment;
+                                final double wd = d * increment;
+                                final double we = e * increment;
+
+                                final String ws = "textual:" + wa + " uri:" + wb + " type:" + wc
+                                        + " frame:" + wd + " time:" + we;
+                                System.out.println("\n\n\n**** " + ws + " ****\n\n");
+
+                                properties.setProperty("ke4ir.ranker.tfidf.weights", ws);
+                                final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.");
+                                LOGGER.info("Initialized in {} ms", System.currentTimeMillis() - ts);
+                                ke4ir.search();
+
+                                final List<String> lines = Files.readAllLines(propertiesPath.getParent().resolve(
+                                        "results/aggregates.csv"));
+                                for (int i = 1; i < lines.size(); ++i) {
+                                    data.add(String.format("%.2f", wa) + ";" + String.format("%.2f", wb) + ";" + String.format("%.2f", wc) + ";" + String.format("%.2f", wd) + ";" + String.format("%.2f", we) + ";" + lines.get(i));
+                                }
+                                total++;
+                            }
+                Files.write(propertiesPath.getParent().resolve("results/experiment.csv"), data,
+                        Charsets.UTF_8);
+                System.out.println("Total combinations: "+total);
+
+            } else if (weight) {
 
                 final List<String> data = Lists.newArrayList();
                 data.add("value;setting;p1;p1ss;p3;p3ss;p5;p5ss;p10;p10ss;mrr;mrrss;ndcg;ndcgss;ndcg10;ndcg10ss;map;mapss;map10;map10ss");
-                for (int j = 0; j <= 100; j += 1) {
-                    final double w = j * 0.01;
+                for (int j = 0; j <= topw; j += 1) {
+                    final double w = j*(1.0/topw);
                     final String ws = "textual:" + (1 - w) + " uri:" + w / 4 + " type:" + w / 4
                             + " frame:" + w / 4 + " time:" + w / 4;
                     System.out.println("\n\n\n**** " + ws + " ****\n\n");
@@ -216,6 +261,7 @@ public class KE4IR {
                 }
                 Files.write(propertiesPath.getParent().resolve("results/experiment.csv"), data,
                         Charsets.UTF_8);
+
 
             } else {
                 final KE4IR ke4ir = new KE4IR(propertiesPath.getParent(), properties, "ke4ir.");
