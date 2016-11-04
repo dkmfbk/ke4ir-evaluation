@@ -28,8 +28,9 @@ public class DeltaExporter {
         try {
             // Parse command line
             final CommandLine cmd = CommandLine.parser().withName("delta-exporter")
-                    .withOption("i", "input", "the input folder", "PATH",
-                            CommandLine.Type.DIRECTORY_EXISTING, true, false, true)
+                    .withOption("i", "input",
+                            "the input folder (must contain subfolders for each analyzed dataset)",
+                            "PATH", CommandLine.Type.DIRECTORY_EXISTING, true, false, true)
                     .withOption("o", "output", "the output folder", "PATH",
                             CommandLine.Type.DIRECTORY_EXISTING, true, false, true)
                     .withHeader("Computes deltas of layer+textual wrt textual only, "
@@ -47,7 +48,10 @@ public class DeltaExporter {
                 // Open output files
                 for (final String measure : MEASURES.keySet()) {
                     final Path path = outputPath.resolve("delta." + measure + ".csv");
-                    writers.put(measure, IO.utf8Writer(IO.buffer(IO.write(path.toString()))));
+                    final Writer writer = IO.utf8Writer(IO.buffer(IO.write(path.toString())));
+                    writers.put(measure, writer);
+                    writer.write(
+                            "folder;query;setting;delta_abs;delta_rel;delta_mean;value;textual\n");
                 }
 
                 // Process all sub-folders of the specified input folder
@@ -99,14 +103,17 @@ public class DeltaExporter {
                             if (!"textual".equals(setting)) {
                                 for (final String measure : MEASURES.keySet()) {
                                     final int index = MEASURES.get(measure);
-                                    final double settingValue = Double.parseDouble(row[index]);
-                                    final double textualValue = Double
-                                            .parseDouble(textualRow[index]);
-                                    final double delta = delta(settingValue, textualValue);
+                                    final double value = Double.parseDouble(row[index]);
+                                    final double textual = Double.parseDouble(textualRow[index]);
+                                    final double mean = 0.5 * (value + textual);
+                                    final double deltaAbs = value - textual;
+                                    final double deltaMean = mean == 0.0 ? 0.0 : deltaAbs / mean;
+                                    final double deltaRel = textual == 0.0 ? Double.NaN
+                                            : deltaAbs / textual;
                                     final Writer writer = writers.get(measure);
                                     writer.write(folderId + ";" + queryId + ";" + setting + ";"
-                                            + delta + ";" + settingValue + ";" + textualValue
-                                            + "\n");
+                                            + deltaAbs + ";" + deltaRel + ";" + deltaMean + ";"
+                                            + value + ";" + textual + "\n");
                                 }
                             }
                         }
@@ -123,15 +130,6 @@ public class DeltaExporter {
         } catch (final Throwable ex) {
             // Display error information and terminate
             CommandLine.fail(ex);
-        }
-    }
-
-    private static double delta(final double value, final double baseline) {
-        if (value == baseline) {
-            return 0.0;
-        } else {
-            final double mean = 0.5 * (value + baseline);
-            return (value - baseline) / mean;
         }
     }
 
