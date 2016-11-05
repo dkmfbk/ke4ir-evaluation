@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.stream.Collectors;
@@ -79,9 +80,10 @@ public class DeltaExporter {
                             String line;
                             while ((line = reader.readLine()) != null) {
                                 final String[] fields = line.split(";");
-                                if (fields.length >= 12) {
-                                    final String setting = fields[11].replace(' ', ',');
-                                    if (setting.contains("textual")
+                                if (!"setting".equals(fields[0]) && fields.length >= 12) {
+                                    final String setting = fields[0];
+                                    final String available = fields[11].replace(' ', ',');
+                                    if (setting.equals(available) && setting.contains("textual")
                                             && !rows.containsKey(setting)) {
                                         rows.put(setting, fields);
                                     }
