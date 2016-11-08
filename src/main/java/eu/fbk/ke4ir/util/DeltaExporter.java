@@ -4,7 +4,6 @@ import java.io.BufferedReader;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.stream.Collectors;
@@ -34,6 +33,7 @@ public class DeltaExporter {
                             "PATH", CommandLine.Type.DIRECTORY_EXISTING, true, false, true)
                     .withOption("o", "output", "the output folder", "PATH",
                             CommandLine.Type.DIRECTORY_EXISTING, true, false, true)
+                    .withOption("a", "available", "base analysis on available layers only")
                     .withHeader("Computes deltas of layer+textual wrt textual only, "
                             + "for all queries in one or more folders")
                     .withLogger(LoggerFactory.getLogger("eu.fbk")).parse(args);
@@ -41,6 +41,7 @@ public class DeltaExporter {
             // Read options
             final Path inputPath = cmd.getOptionValue("i", Path.class);
             final Path outputPath = cmd.getOptionValue("o", Path.class);
+            final boolean useAvailableLayers = cmd.hasOption("a");
 
             // Allocate a map of writers for output files
             final Map<String, Writer> writers = Maps.newHashMap();
@@ -80,11 +81,16 @@ public class DeltaExporter {
                             String line;
                             while ((line = reader.readLine()) != null) {
                                 final String[] fields = line.split(";");
-                                if (!"setting".equals(fields[0]) && fields.length >= 12) {
+                                if (!"setting".equals(fields[0]) && fields[0].contains("textual")
+                                        && fields.length >= 12) {
                                     final String setting = fields[0];
-                                    final String available = fields[11].replace(' ', ',');
-                                    if (setting.equals(available) && setting.contains("textual")
-                                            && !rows.containsKey(setting)) {
+                                    if (useAvailableLayers) {
+                                        final String available = fields[11].replace(' ', ',');
+                                        if (setting.equals(available)
+                                                && !rows.containsKey(setting)) {
+                                            rows.put(setting, fields);
+                                        }
+                                    } else {
                                         rows.put(setting, fields);
                                     }
                                 }
