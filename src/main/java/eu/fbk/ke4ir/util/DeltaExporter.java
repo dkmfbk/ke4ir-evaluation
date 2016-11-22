@@ -169,8 +169,14 @@ public class DeltaExporter {
                                     if (textualRow == null || systemRow == null) {
                                         continue;
                                     }
-                                    textual.add(Double.valueOf(textualRow[index]));
-                                    system.add(Double.valueOf(systemRow[index]));
+                                    final double textualVal = Double.valueOf(textualRow[index]);
+                                    final double systemVal = Double.valueOf(systemRow[index]);
+                                    if (!Double.isFinite(textualVal)
+                                            || !Double.isFinite(systemVal)) {
+                                        continue;
+                                    }
+                                    textual.add(textualVal);
+                                    system.add(systemVal);
                                 }
                             }
                             final double[] systemVals = Doubles.toArray(system);
