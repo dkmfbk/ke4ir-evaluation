@@ -18,7 +18,23 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Ordering;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import eu.fbk.rdfpro.util.Environment;
+
 public class RankingScore implements Serializable {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(RankingScore.class);
+
+    private static final boolean USE_ALT_NDCG;
+
+    static {
+        USE_ALT_NDCG = Environment.getProperty("ndcg", "alt").equalsIgnoreCase("alt");
+        if (!USE_ALT_NDCG) {
+            LOGGER.info("Using regular NDCG score");
+        }
+    }
 
     private static final long serialVersionUID = 1L;
 
@@ -64,8 +80,8 @@ public class RankingScore implements Serializable {
         if (number <= 0) {
             throw new IllegalArgumentException("Negative number");
         } else if (number > this.maxN) {
-            throw new IllegalArgumentException("No data for N = " + number + " (Max N: "
-                    + this.maxN + ")");
+            throw new IllegalArgumentException(
+                    "No data for N = " + number + " (Max N: " + this.maxN + ")");
         }
     }
 
@@ -179,8 +195,8 @@ public class RankingScore implements Serializable {
     @Override
     public int hashCode() {
         return Objects.hash(this.maxN, this.numRanking, Arrays.hashCode(this.numRankings),
-                Arrays.hashCode(this.precisions), this.mrr, this.ndcg,
-                Arrays.hashCode(this.ndcgs), this.map, Arrays.hashCode(this.maps));
+                Arrays.hashCode(this.precisions), this.mrr, this.ndcg, Arrays.hashCode(this.ndcgs),
+                this.map, Arrays.hashCode(this.maps));
     }
 
     @Override
@@ -203,6 +219,9 @@ public class RankingScore implements Serializable {
         }
         final int maxN = ns[count - 1];
 
+        final double ndcg = USE_ALT_NDCG ? getAltNDCG() : getNDCG();
+        final double ndcgAtN = USE_ALT_NDCG ? getAltNDCG(maxN) : getNDCG(maxN);
+
         final StringBuilder builder = new StringBuilder();
         for (int i = 0; i < count; ++i) {
             n = ns[i];
@@ -210,9 +229,9 @@ public class RankingScore implements Serializable {
                     .append(String.format("%.3f", getPrecision(n))).append(" ");
         }
         builder.append("mrr=").append(String.format("%.3f", getMRR())).append(" ");
-        builder.append("ndcg=").append(String.format("%.3f", getAltNDCG())).append(" ");
-        builder.append("ndcg@").append(maxN).append("=")
-                .append(String.format("%.3f", getAltNDCG(maxN))).append(" ");
+        builder.append("ndcg=").append(String.format("%.3f", ndcg)).append(" ");
+        builder.append("ndcg@").append(maxN).append("=").append(String.format("%.3f", ndcgAtN))
+                .append(" ");
         builder.append("map=").append(String.format("%.3f", getMAP())).append(" ");
         builder.append("map@").append(maxN).append("=").append(String.format("%.3f", getMAP(n)))
                 .append(" ");
@@ -243,16 +262,15 @@ public class RankingScore implements Serializable {
     public static void main(final String... args) {
         try {
             // Parse command line
-            final CommandLine cmd = CommandLine
-                    .parser()
-                    .withName("ranking-score")
+            final CommandLine cmd = CommandLine.parser().withName("ranking-score")
                     .withOption("g", "gold", "specifies the gold relevances FILE", "FILE",
                             CommandLine.Type.FILE_EXISTING, true, false, true)
                     .withOption("r", "ranking", "specifies the ranking FILE", "FILE",
                             CommandLine.Type.FILE_EXISTING, true, false, true)
                     .withHeader("Evaluates the ranking from a file against the gold relevances " //
                             + "in another file. File format: rank_id item1_id[:rel] ... " //
-                            + "where rel is 1 if omitted").parse(args);
+                            + "where rel is 1 if omitted")
+                    .parse(args);
 
             // Parse gold relevances
             final Map<String, Map<String, Double>> rels = Maps.newHashMap();
@@ -288,17 +306,16 @@ public class RankingScore implements Serializable {
                 final RankingScore s = RankingScore.evaluator(10).add(ranking, rels.get(key))
                         .get();
                 evaluator.add(s);
-                System.out.println(key + "\t" + s.getPrecision(1) + "\t" + s.getPrecision(3)
-                        + "\t" + s.getPrecision(5) + "\t" + s.getPrecision(10) + "\t" + s.getMRR()
-                        + "\t" + s.getAltNDCG() + "\t" + s.getAltNDCG(10) + "\t" + s.getMAP() + "\t"
+                System.out.println(key + "\t" + s.getPrecision(1) + "\t" + s.getPrecision(3) + "\t"
+                        + s.getPrecision(5) + "\t" + s.getPrecision(10) + "\t" + s.getMRR() + "\t"
+                        + s.getAltNDCG() + "\t" + s.getAltNDCG(10) + "\t" + s.getMAP() + "\t"
                         + s.getMAP(10));
             }
             final RankingScore s = evaluator.get();
-            System.out
-                    .println("ALL\t" + s.getPrecision(1) + "\t" + s.getPrecision(3) + "\t"
-                            + s.getPrecision(5) + "\t" + s.getPrecision(10) + "\t" + s.getMRR()
-                            + "\t" + s.getAltNDCG() + "\t" + s.getAltNDCG(10) + "\t" + s.getMAP() + "\t"
-                            + s.getMAP(10));
+            System.out.println("ALL\t" + s.getPrecision(1) + "\t" + s.getPrecision(3) + "\t"
+                    + s.getPrecision(5) + "\t" + s.getPrecision(10) + "\t" + s.getMRR() + "\t"
+                    + s.getAltNDCG() + "\t" + s.getAltNDCG(10) + "\t" + s.getMAP() + "\t"
+                    + s.getMAP(10));
 
         } catch (final Throwable ex) {
             // Display error information and terminate
@@ -345,13 +362,13 @@ public class RankingScore implements Serializable {
                 final String type = spec.substring(0, index).trim().toLowerCase().intern();
                 final int number = Integer.parseInt(spec.substring(index + 1).trim());
                 Preconditions.checkArgument(number > 0);
-                Preconditions.checkArgument(type == "p" || type == "ndcg" || type == "altndcg"
-                        || type == "map");
+                Preconditions.checkArgument(
+                        type == "p" || type == "ndcg" || type == "altndcg" || type == "map");
                 return new Measure(type, number);
             } else {
                 final String type = spec.trim().toLowerCase().intern();
-                Preconditions.checkArgument(type == "mrr" || type == "ndcg" || type == "altndcg"
-                        || type == "map");
+                Preconditions.checkArgument(
+                        type == "mrr" || type == "ndcg" || type == "altndcg" || type == "map");
                 return new Measure(type, 0);
             }
         }
@@ -499,8 +516,8 @@ public class RankingScore implements Serializable {
                     }
                     if (n <= relItems.size()) {
                         ndcgDen += (rels == null ? 1.0 : relsSorted[relsSorted.length - n]) * f;
-                        altNdcgDen += (rels == null ? 1.0 : Math.pow(2.0,
-                                relsSorted[relsSorted.length - n]) - 1) * altF;
+                        altNdcgDen += (rels == null ? 1.0
+                                : Math.pow(2.0, relsSorted[relsSorted.length - n]) - 1) * altF;
                     }
 
                     if (n <= this.maxN) {
@@ -510,7 +527,8 @@ public class RankingScore implements Serializable {
                         this.sumAltNDCGs[n - 1] += altNdcgNum / altNdcgDen;
                         if (!relItems.isEmpty()) {
                             // division by relItems.size() and not Math.min(n, relItems.size()) is
-                            // justified by: http://www.msr-waypoint.net/pubs/130616/fp146-radlinski.pdf
+                            // justified by:
+                            // http://www.msr-waypoint.net/pubs/130616/fp146-radlinski.pdf
                             this.sumMAPs[n - 1] += mapNum / relItems.size();
                         }
                     }
@@ -522,8 +540,8 @@ public class RankingScore implements Serializable {
                         final double f = n == 1 ? 1 : ln2 / Math.log(n); // factor used for NDCG
                         final double altF = ln2 / Math.log(n + 1); // factor used for alt NDCG
                         ndcgDen += (rels == null ? 1.0 : relsSorted[relsSorted.length - n]) * f;
-                        altNdcgDen += (rels == null ? 1.0 : Math.pow(2.0,
-                                relsSorted[relsSorted.length - n]) - 1) * altF;
+                        altNdcgDen += (rels == null ? 1.0
+                                : Math.pow(2.0, relsSorted[relsSorted.length - n]) - 1) * altF;
                     }
                     if (n <= this.maxN) {
                         this.sumNDCGs[n - 1] += ndcgNum / ndcgDen;
@@ -563,8 +581,8 @@ public class RankingScore implements Serializable {
                 this.sumMAP += score.map * score.numRanking;
                 for (int i = 0; i < this.maxN; ++i) {
                     this.numRankings[i] += score.numRankings[i];
-                    this.sumPrecision[i] += score.numRankings[i] == 0 ? 0 : score.precisions[i]
-                            * score.numRankings[i];
+                    this.sumPrecision[i] += score.numRankings[i] == 0 ? 0
+                            : score.precisions[i] * score.numRankings[i];
                     this.sumNDCGs[i] += score.ndcgs[i] * score.numRanking;
                     this.sumAltNDCGs[i] += score.altNdcgs[i] * score.numRanking;
                     this.sumMAPs[i] += score.maps[i] * score.numRanking;
