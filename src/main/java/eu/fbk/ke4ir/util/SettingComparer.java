@@ -79,7 +79,7 @@ public class SettingComparer {
             table[0][0] = format("Approach/System", true, latex);
             table[1][0] = baselineLabel;
             table[2][0] = systemLabel;
-            table[3][0] = baselineLabel + " vs. " + systemLabel;
+            table[3][0] = systemLabel + " vs. " + baselineLabel;
             table[4][0] = (latex ? "$p$" : "p") + "-value (paired t-test)";
             table[5][0] = (latex ? "$p$" : "p") + "-value (approx. random.)";
 
@@ -154,7 +154,7 @@ public class SettingComparer {
             }
 
             final String colSep = latex ? " & " : "   ";
-            final String rowSep = latex ? " \\\\\\hline\n" : "\n";
+            final String rowSep = latex ? " \\\\ \\hline\n" : "\n";
             final StringBuilder out = new StringBuilder();
             for (int i = 0; i < nrows; ++i) {
                 for (int j = 0; j < ncols; ++j) {

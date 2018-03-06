@@ -162,8 +162,8 @@ public class KE4IR {
             boolean analyzeDocs = cmd.hasOption("analyze-docs") || cmd.hasOption("a");
             boolean analyzeQueries = cmd.hasOption("analyze-queries") || cmd.hasOption("a");
             boolean index = cmd.hasOption("i");
-            boolean search = cmd.hasOption("s");
             boolean rerank = cmd.hasOption("r");
+            boolean search = cmd.hasOption("s");
             boolean weight = cmd.hasOption("w");
             boolean heavyweight = cmd.hasOption("ww");
 
